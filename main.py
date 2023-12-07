@@ -65,31 +65,48 @@ def get_data(db, rfid):
 
 
 class Player:
-    def __init__(self, source, location):
+    def __init__(self, source, playback_state, location):
         self.source = source
         self.location = location
+        self.playback_state = (
+            playback_state
+            if playback_state
+            else {"offset": 0, "position_ms": 0}
+        )
         self.playing = False
 
     def play(self):
-        print("Playing")
-        print(self.source)
-        print(self.location)
-        print(spotify.base_url)
-        print(spotify.headers)
-        spotify.play_album(
-            spotify.base_url, spotify.headers, self.location, 0, 0
-        )
+        if self.source == "spotify":
+            spotify.play_album(
+                spotify.base_url,
+                spotify.headers,
+                spotify.device_id,
+                self.location,
+                self.playback_state["offset"],
+                self.playback_state["position_ms"],
+            )
+        else:
+            pass
         self.playing = True
 
     def toggle_playback(self):
-        print("Toggle playback")
+        if self.source == "spotify":
+            spotify.toggle_playback(
+                spotify.base_url, spotify.headers, spotify.device_id
+            )
         self.playing = not self.playing
 
     def next_track(self):
-        print("Next track")
+        if self.source == "spotify":
+            spotify.next_track(
+                spotify.base_url, spotify.headers, spotify.device_id
+            )
 
     def previous_track(self):
-        print("Previous track")
+        if self.source == "spotify":
+            spotify.previous_track(
+                spotify.base_url, spotify.headers, spotify.device_id
+            )
 
     def stop(self):
         print("Stop")
@@ -107,7 +124,6 @@ def shutdown(player):
 
 def main():
     player = None
-    get_playback_state()
 
     while True:
         timeout = 5
@@ -137,7 +153,9 @@ def main():
                                 print("Nothing playing")
                     else:
                         player = Player(
-                            data.get("source"), data.get("location")
+                            data.get("source"),
+                            data.get("playback_state"),
+                            data.get("location"),
                         )
                         player.play()
             except Exception as e:
