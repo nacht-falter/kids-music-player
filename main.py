@@ -5,6 +5,7 @@ import json
 
 
 def get_command(db, rfid):
+    """Get command to execute from database"""
     cursor = db.cursor()
     cursor.execute("SELECT * FROM controls where rfid = ?", (rfid,))
     command = cursor.fetchone()
@@ -16,6 +17,7 @@ def get_command(db, rfid):
 
 
 def get_music_data(db, rfid):
+    """Get music data from database"""
     cursor = db.cursor()
     cursor.execute(f"SELECT * FROM music WHERE rfid = {rfid}")
     result = cursor.fetchone()
@@ -28,6 +30,23 @@ def get_music_data(db, rfid):
 
 
 class SpotifyPlayer:
+    """Spotify player class
+
+    Attributes:
+    rfid (str): RFID tag
+    playback_state (dict): Playback state
+    location (str): Spotify URI
+
+    Methods:
+    play(): Play music
+    toggle_playback(): Toggle playback
+    next_track(): Play next track
+    previous_track(): Play previous track
+    pause(): Pause playback
+    restart_playback(): Restart playback
+    save_playback_state(): Save playback state to database
+    """
+
     def __init__(self, rfid, playback_state, location):
         self.rfid = rfid
         self.location = location
@@ -100,6 +119,7 @@ class SpotifyPlayer:
 
 
 def shutdown(player):
+    """Shutdown computer"""
     if not getattr(player, "playing", False):
         print("\nShutting down...")
 
@@ -110,6 +130,7 @@ def main():
     shutdown_counter = 0
 
     while True:
+        # Wait for RFID input
         timeout = 3600
         timer = Timer(timeout, shutdown, [player])
         timer.start()
@@ -119,6 +140,7 @@ def main():
         if not rfid:
             break
 
+        # Check if RFID is already playing
         if player and rfid == player.rfid:
             if restart_counter > 0 and player.playing:
                 player.restart_playback()
@@ -130,10 +152,12 @@ def main():
                 restart_counter += 1
 
         else:
+            # Get command and music data from database
             with sqlite3.connect("toem.db") as db:
                 command = get_command(db, rfid)
                 music_data = get_music_data(db, rfid)
 
+            # Execute command or play music
             if command:
                 if command == "shutdown":
                     if shutdown_counter > 0:
