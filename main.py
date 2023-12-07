@@ -2,6 +2,8 @@ from threading import Timer
 import sqlite3
 import spotify
 import json
+import os
+import env
 
 
 def get_command(db, rfid):
@@ -47,7 +49,8 @@ class SpotifyPlayer:
     save_playback_state(): Save playback state to database
     """
 
-    def __init__(self, rfid, playback_state, location):
+    def __init__(self, database_url, rfid, playback_state, location):
+        self.database_url = database_url
         self.rfid = rfid
         self.location = location
         self.playback_state = (
@@ -111,7 +114,7 @@ class SpotifyPlayer:
             "offset": track_number - 1,
             "position_ms": position_ms,
         }
-        with sqlite3.connect("toem.db") as db:
+        with sqlite3.connect(self.database_url) as db:
             db.cursor().execute(
                 "UPDATE music SET playback_state = ? WHERE rfid = ?",
                 (json.dumps(self.playback_state), self.rfid),
@@ -126,6 +129,7 @@ def shutdown(player):
 
 
 def main():
+    DATABASE_URL = os.environ.get("DATABASE_URL")
     player = None
     restart_counter = 0
     shutdown_counter = 0
@@ -154,7 +158,7 @@ def main():
 
         else:
             # Get command and music data from database
-            with sqlite3.connect("toem.db") as db:
+            with sqlite3.connect(DATABASE_URL) as db:
                 command = get_command(db, rfid)
                 music_data = get_music_data(db, rfid)
 
@@ -179,6 +183,7 @@ def main():
                     player.pause()
                     player.save_playback_state()
                 player = SpotifyPlayer(
+                    DATABASE_URL,
                     music_data["rfid"],
                     music_data["playback_state"],
                     music_data["location"],
