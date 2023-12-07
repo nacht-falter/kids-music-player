@@ -1,6 +1,7 @@
 from threading import Timer
 import sqlite3
 import spotify
+import json
 
 
 def create_tables():
@@ -44,77 +45,88 @@ def get_playback_state():
     print("Spotify playing: ", spotify_playback_status)
 
 
-def get_data(db, rfid):
+def get_command(db, rfid):
     cursor = db.cursor()
     cursor.execute("SELECT * FROM controls where rfid = ?", (rfid,))
-    command_result = cursor.fetchone()
+    command = cursor.fetchone()
 
-    if command_result:
-        data = {"type": "command", "command": command_result[1]}
+    if command:
+        return command[1]
+    else:
+        return None
+
+
+def get_music_data(db, rfid):
+    cursor = db.cursor()
+    cursor.execute(f"SELECT * FROM music WHERE rfid = {rfid}")
+    result = cursor.fetchone()
+    if result:
+        columns = [desc[0] for desc in cursor.description]
+        data = dict(zip(columns, result))
         return data
     else:
-        cursor.execute(f"SELECT * FROM music WHERE rfid = {rfid}")
-        result = cursor.fetchone()
-        if result:
-            columns = [desc[0] for desc in cursor.description]
-            data = dict(zip(columns, result))
-            data["type"] = "music"
-            return data
-        else:
-            return None
+        return None
 
 
-class Player:
-    def __init__(self, source, playback_state, location):
-        self.source = source
+class SpotifyPlayer:
+    def __init__(self, rfid, playback_state, location):
+        self.rfid = rfid
         self.location = location
         self.playback_state = (
-            playback_state
+            json.loads(playback_state)
             if playback_state
             else {"offset": 0, "position_ms": 0}
         )
         self.playing = False
 
     def play(self):
-        if self.source == "spotify":
-            spotify.play_album(
-                spotify.base_url,
-                spotify.headers,
-                spotify.device_id,
-                self.location,
-                self.playback_state["offset"],
-                self.playback_state["position_ms"],
-            )
-        else:
-            pass
+        spotify.play(
+            spotify.base_url,
+            spotify.headers,
+            spotify.device_id,
+            self.location,
+            self.playback_state["offset"],
+            self.playback_state["position_ms"],
+        )
         self.playing = True
 
     def toggle_playback(self):
-        if self.source == "spotify":
-            spotify.toggle_playback(
-                spotify.base_url, spotify.headers, spotify.device_id
-            )
+        spotify.toggle_playback(
+            spotify.base_url, spotify.headers, spotify.device_id
+        )
         self.playing = not self.playing
 
     def next_track(self):
-        if self.source == "spotify":
-            spotify.next_track(
-                spotify.base_url, spotify.headers, spotify.device_id
-            )
+        spotify.next_track(
+            spotify.base_url, spotify.headers, spotify.device_id
+        )
 
     def previous_track(self):
-        if self.source == "spotify":
-            spotify.previous_track(
-                spotify.base_url, spotify.headers, spotify.device_id
-            )
+        spotify.previous_track(
+            spotify.base_url, spotify.headers, spotify.device_id
+        )
 
-    def stop(self):
-        print("Stop")
+    def pause(self):
+        spotify.pause_playback(
+            spotify.base_url, spotify.headers, spotify.device_id
+        )
         self.playing = False
 
-
-def on_timeout(player):
-    shutdown(player)
+    def save_playback_state(self):
+        playback_state = spotify.check_playback_status(
+            spotify.base_url, spotify.headers
+        )
+        position_ms = playback_state.get("progress_ms")
+        track_number = playback_state.get("item").get("track_number")
+        self.playback_state = {
+            "offset": track_number - 1,
+            "position_ms": position_ms,
+        }
+        with sqlite3.connect("toem.db") as db:
+            db.cursor().execute(
+                "UPDATE music SET playback_state = ? WHERE rfid = ?",
+                (json.dumps(self.playback_state), self.rfid),
+            )
 
 
 def shutdown(player):
@@ -127,39 +139,44 @@ def main():
 
     while True:
         timeout = 5
-        timer = Timer(timeout, on_timeout, args=(player,))
+        timer = Timer(timeout, shutdown, [player])
         timer.start()
         rfid = input("Enter RFID: ")
         timer.cancel()
 
-        if rfid:
-            db = sqlite3.connect("toem.db")
-            try:
-                data = get_data(db, rfid)
-                if data:
-                    type = data.get("type")
-                    command = data.get("command")
-                    if type == "command":
-                        if player:
-                            if command == "shutdown":
-                                player.stop()
-                                shutdown(player)
-                            else:
-                                getattr(player, command)()
-                        else:
-                            if command == "shutdown":
-                                shutdown(player)
-                            else:
-                                print("Nothing playing")
+        if not rfid:
+            break
+
+        if player and rfid == player.rfid:
+            print("Already playing")
+
+        else:
+            with sqlite3.connect("toem.db") as db:
+                command = get_command(db, rfid)
+                music_data = get_music_data(db, rfid)
+
+            if command:
+                if command == "shutdown":
+                    if player:
+                        player.pause()
+                    break
+                else:
+                    if player:
+                        getattr(player, command)()
                     else:
-                        player = Player(
-                            data.get("source"),
-                            data.get("playback_state"),
-                            data.get("location"),
-                        )
-                        player.play()
-            except Exception as e:
-                print(e)
+                        print("No player found")
+            elif music_data:
+                if player:
+                    player.pause()
+                    player.save_playback_state()
+                player = SpotifyPlayer(
+                    music_data["rfid"],
+                    music_data["playback_state"],
+                    music_data["location"],
+                )
+                player.play()
+
+    shutdown(player)
 
 
 if __name__ == "__main__":
