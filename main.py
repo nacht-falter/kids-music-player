@@ -1,6 +1,7 @@
 from threading import Timer
 import sqlite3
-import spotify
+from spotify import SpotifyPlayer
+from local import AudioPlayer
 import json
 import os
 import env
@@ -31,96 +32,6 @@ def get_music_data(db, rfid):
         return None
 
 
-class SpotifyPlayer:
-    """Spotify player class
-
-    Attributes:
-    rfid (str): RFID tag
-    playback_state (dict): Playback state
-    location (str): Spotify URI
-
-    Methods:
-    play(): Play music
-    toggle_playback(): Toggle playback
-    next_track(): Play next track
-    previous_track(): Play previous track
-    pause(): Pause playback
-    restart_playback(): Restart playback
-    save_playback_state(): Save playback state to database
-    """
-
-    def __init__(self, database_url, rfid, playback_state, location):
-        self.database_url = database_url
-        self.rfid = rfid
-        self.location = location
-        self.playback_state = (
-            json.loads(playback_state)
-            if playback_state
-            else {"offset": 0, "position_ms": 0}
-        )
-        self.playing = False
-
-    def play(self):
-        spotify.play(
-            spotify.base_url,
-            spotify.headers,
-            spotify.device_id,
-            self.location,
-            self.playback_state["offset"],
-            self.playback_state["position_ms"],
-        )
-        self.playing = True
-
-    def toggle_playback(self):
-        spotify.toggle_playback(
-            spotify.base_url, spotify.headers, spotify.device_id
-        )
-        self.playing = not self.playing
-
-    def next_track(self):
-        spotify.next_track(
-            spotify.base_url, spotify.headers, spotify.device_id
-        )
-
-    def previous_track(self):
-        spotify.previous_track(
-            spotify.base_url, spotify.headers, spotify.device_id
-        )
-
-    def pause(self):
-        spotify.pause_playback(
-            spotify.base_url, spotify.headers, spotify.device_id
-        )
-        self.playing = False
-
-    def restart_playback(self):
-        spotify.play(
-            spotify.base_url,
-            spotify.headers,
-            spotify.device_id,
-            self.location,
-            0,
-            0,
-        )
-        self.playing = True
-
-    def save_playback_state(self):
-        playback_state = spotify.check_playback_status(
-            spotify.base_url, spotify.headers
-        )
-        position_ms = playback_state.get("progress_ms")
-        track_number = playback_state.get("item").get("track_number")
-        self.playback_state = {
-            "offset": track_number - 1,
-            "position_ms": position_ms,
-        }
-        with sqlite3.connect(self.database_url) as db:
-            db.cursor().execute(
-                "UPDATE music SET playback_state = ? WHERE rfid = ?",
-                (json.dumps(self.playback_state), self.rfid),
-            )
-
-
 def shutdown(player):
     """Shutdown computer"""
     if player and not player.playing:
@@ -131,8 +42,8 @@ def shutdown(player):
 def main():
     DATABASE_URL = os.environ.get("DATABASE_URL")
     player = None
-    restart_counter = 0
-    shutdown_counter = 0
+    previous_rfid = None
+    repeat_counter = 0
 
     while True:
         # Wait for RFID input
@@ -145,16 +56,21 @@ def main():
         if not rfid:
             break
 
+        if previous_rfid == rfid:
+            repeat_counter += 1
+        else:
+            repeat_counter = 0
+
         # Check if RFID is already playing
         if player and rfid == player.rfid:
-            if restart_counter > 0 and player.playing:
-                player.restart_playback()
-                restart_counter = 0
-            elif restart_counter == 0 and not player.playing:
-                player.toggle_playback()
+            if repeat_counter > 1:
+                if player.playing:
+                    player.restart_playback()
+                else:
+                    player.toggle_playback()
+                repeat_counter = 0
             else:
                 print("Already playing")
-                restart_counter += 1
 
         else:
             # Get command and music data from database
@@ -165,13 +81,12 @@ def main():
             # Execute command or play music
             if command:
                 if command == "shutdown":
-                    if shutdown_counter > 0:
+                    if repeat_counter > 0:
                         if player:
-                            player.pause()
+                            player.pause_playback()
                         break
                     else:
                         print("confirm shutdown")
-                        shutdown_counter += 1
                 else:
                     if player:
                         getattr(player, command)()
@@ -180,10 +95,9 @@ def main():
 
             elif music_data:
                 if player:
-                    player.pause()
+                    player.pause_playback()
                     player.save_playback_state()
                 player = SpotifyPlayer(
-                    DATABASE_URL,
                     music_data["rfid"],
                     music_data["playback_state"],
                     music_data["location"],
@@ -193,8 +107,7 @@ def main():
             else:
                 print("Unknown RFID")
 
-            restart_counter = 0
-            shutdown_counter = 0
+            previous_rfid = rfid
 
     shutdown(player)
 
