@@ -7,7 +7,7 @@ import json
 def get_command(db, rfid):
     """Get command to execute from database"""
     cursor = db.cursor()
-    cursor.execute("SELECT * FROM controls where rfid = ?", (rfid,))
+    cursor.execute("SELECT * FROM commands where rfid = ?", (rfid,))
     command = cursor.fetchone()
 
     if command:
@@ -19,7 +19,7 @@ def get_command(db, rfid):
 def get_music_data(db, rfid):
     """Get music data from database"""
     cursor = db.cursor()
-    cursor.execute(f"SELECT * FROM music WHERE rfid = {rfid}")
+    cursor.execute("SELECT * FROM music WHERE rfid = ?", (rfid,))
     result = cursor.fetchone()
     if result:
         columns = [desc[0] for desc in cursor.description]
@@ -120,7 +120,8 @@ class SpotifyPlayer:
 
 def shutdown(player):
     """Shutdown computer"""
-    if not getattr(player, "playing", False):
+    if player and not player.playing:
+        player.save_playback_state()
         print("\nShutting down...")
 
 
@@ -163,7 +164,6 @@ def main():
                     if shutdown_counter > 0:
                         if player:
                             player.pause()
-                            player.save_playback_state()
                         break
                     else:
                         print("confirm shutdown")
@@ -184,6 +184,9 @@ def main():
                     music_data["location"],
                 )
                 player.play()
+
+            else:
+                print("Unknown RFID")
 
             restart_counter = 0
             shutdown_counter = 0
