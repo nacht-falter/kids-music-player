@@ -27,7 +27,7 @@ def spotify_auth():
 
 
 base_url = "https://api.spotify.com/v1"
-eaders = {"Authorization": f"Bearer {spotify_auth()}"}
+headers = {"Authorization": f"Bearer {spotify_auth()}"}
 device_id = os.environ.get("DEVICE_ID")
 
 
