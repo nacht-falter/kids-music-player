@@ -41,7 +41,7 @@ def check_playback_status(base_url, headers):
         return None
 
 
-def play_album(base_url, headers, device_id, uri, offset, position_ms):
+def play(base_url, headers, device_id, uri, offset, position_ms):
     request_url = base_url + "/me/player/play?device_id=" + device_id
     data = {
         "context_uri": uri,
@@ -61,6 +61,13 @@ def toggle_playback(base_url, headers, device_id):
         request_url = base_url + "/me/player/play?device_id=" + device_id
     response = requests.put(request_url, headers=headers)
 
+    if response.status_code != 204:
+        print(response.status_code)
+
+
+def pause_playback(base_url, headers, device_id):
+    request_url = base_url + "/me/player/pause?device_id=" + device_id
+    response = requests.put(request_url, headers=headers)
     if response.status_code != 204:
         print(response.status_code)
 
