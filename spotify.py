@@ -5,6 +5,7 @@ import env
 
 
 def spotify_auth():
+    """Get Spotify API access token"""
     USERCREDS = os.environ.get("USERCREDS")
     REFRESH_TOKEN = os.environ.get("REFRESH_TOKEN")
     token_url = "https://accounts.spotify.com/api/token"
@@ -26,11 +27,12 @@ def spotify_auth():
 
 
 base_url = "https://api.spotify.com/v1"
-headers = {"Authorization": f"Bearer {spotify_auth()}"}
+eaders = {"Authorization": f"Bearer {spotify_auth()}"}
 device_id = os.environ.get("DEVICE_ID")
 
 
 def check_playback_status(base_url, headers):
+    """Check if Spotify is playing"""
     request_url = base_url + "/me/player/currently-playing"
     response = requests.get(request_url, headers=headers)
 
@@ -42,6 +44,7 @@ def check_playback_status(base_url, headers):
 
 
 def play(base_url, headers, device_id, uri, offset, position_ms):
+    """Play Spotify album"""
     request_url = base_url + "/me/player/play?device_id=" + device_id
     data = {
         "context_uri": uri,
@@ -55,6 +58,7 @@ def play(base_url, headers, device_id, uri, offset, position_ms):
 
 
 def toggle_playback(base_url, headers, device_id):
+    """Toggle Spotify playback"""
     if check_playback_status(base_url, headers).get("is_playing"):
         request_url = base_url + "/me/player/pause?device_id=" + device_id
     else:
@@ -66,6 +70,7 @@ def toggle_playback(base_url, headers, device_id):
 
 
 def pause_playback(base_url, headers, device_id):
+    """Pause Spotify playback"""
     request_url = base_url + "/me/player/pause?device_id=" + device_id
     response = requests.put(request_url, headers=headers)
     if response.status_code != 204:
@@ -73,6 +78,7 @@ def pause_playback(base_url, headers, device_id):
 
 
 def next_track(base_url, headers, device_id):
+    """Play next track"""
     request_url = base_url + "/me/player/next?device_id=" + device_id
     response = requests.post(request_url, headers=headers)
     if response.status_code != 204:
@@ -80,6 +86,7 @@ def next_track(base_url, headers, device_id):
 
 
 def previous_track(base_url, headers, device_id):
+    """Play previous track"""
     request_url = base_url + "/me/player/previous?device_id=" + device_id
     response = requests.post(request_url, headers=headers)
     if response.status_code != 204:
