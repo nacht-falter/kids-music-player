@@ -4,47 +4,6 @@ import spotify
 import json
 
 
-def create_tables():
-    db = sqlite3.connect("toem.db")
-    cursor = db.cursor()
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS music(
-            rfid TEXT PRIMARY KEY,
-            source TEXT NOT NULL,
-            playback_state TEXT,
-            location TEXT NOT NULL
-        )
-        """
-    )
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS controls(
-            rfid TEXT PRIMARY KEY,
-            command TEXT NOT NULL
-        )
-        """
-    )
-    db.commit()
-    db.close()
-
-
-def create_new_db_entry(db, rfid, source, location):
-    cursor = db.cursor()
-    cursor.execute(
-        "INSERT INTO music (rfid, source, location) VALUES (?, ?, ?)",
-        (rfid, source, location),
-    )
-    db.commit()
-
-
-def get_playback_state():
-    spotify_playback_status = spotify.check_playback_status(
-        spotify.base_url, spotify.headers
-    ).get("is_playing")
-    print("Spotify playing: ", spotify_playback_status)
-
-
 def get_command(db, rfid):
     cursor = db.cursor()
     cursor.execute("SELECT * FROM controls where rfid = ?", (rfid,))
@@ -112,6 +71,17 @@ class SpotifyPlayer:
         )
         self.playing = False
 
+    def restart_playback(self):
+        spotify.play(
+            spotify.base_url,
+            spotify.headers,
+            spotify.device_id,
+            self.location,
+            0,
+            0,
+        )
+        self.playing = True
+
     def save_playback_state(self):
         playback_state = spotify.check_playback_status(
             spotify.base_url, spotify.headers
@@ -136,9 +106,11 @@ def shutdown(player):
 
 def main():
     player = None
+    restart_counter = 0
+    shutdown_counter = 0
 
     while True:
-        timeout = 5
+        timeout = 3600
         timer = Timer(timeout, shutdown, [player])
         timer.start()
         rfid = input("Enter RFID: ")
@@ -148,7 +120,14 @@ def main():
             break
 
         if player and rfid == player.rfid:
-            print("Already playing")
+            if restart_counter > 0 and player.playing:
+                player.restart_playback()
+                restart_counter = 0
+            elif restart_counter == 0 and not player.playing:
+                player.toggle_playback()
+            else:
+                print("Already playing")
+                restart_counter += 1
 
         else:
             with sqlite3.connect("toem.db") as db:
@@ -157,14 +136,20 @@ def main():
 
             if command:
                 if command == "shutdown":
-                    if player:
-                        player.pause()
-                    break
+                    if shutdown_counter > 0:
+                        if player:
+                            player.pause()
+                            player.save_playback_state()
+                        break
+                    else:
+                        print("confirm shutdown")
+                        shutdown_counter += 1
                 else:
                     if player:
                         getattr(player, command)()
                     else:
                         print("No player found")
+
             elif music_data:
                 if player:
                     player.pause()
@@ -175,6 +160,9 @@ def main():
                     music_data["location"],
                 )
                 player.play()
+
+            restart_counter = 0
+            shutdown_counter = 0
 
     shutdown(player)
 
