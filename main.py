@@ -1,5 +1,6 @@
 from threading import Timer
 import sqlite3
+import spotify
 
 
 def create_tables():
@@ -36,6 +37,13 @@ def create_new_db_entry(db, rfid, source, location):
     db.commit()
 
 
+def get_playback_state():
+    spotify_playback_status = spotify.check_playback_status(
+        spotify.base_url, spotify.headers
+    ).get("is_playing")
+    print("Spotify playing: ", spotify_playback_status)
+
+
 def get_data(db, rfid):
     cursor = db.cursor()
     cursor.execute("SELECT * FROM controls where rfid = ?", (rfid,))
@@ -64,6 +72,13 @@ class Player:
 
     def play(self):
         print("Playing")
+        print(self.source)
+        print(self.location)
+        print(spotify.base_url)
+        print(spotify.headers)
+        spotify.play_album(
+            spotify.base_url, spotify.headers, self.location, 0, 0
+        )
         self.playing = True
 
     def toggle_playback(self):
@@ -92,6 +107,7 @@ def shutdown(player):
 
 def main():
     player = None
+    get_playback_state()
 
     while True:
         timeout = 5
