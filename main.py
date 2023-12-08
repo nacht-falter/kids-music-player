@@ -2,7 +2,6 @@ from threading import Timer
 import sqlite3
 from spotify import SpotifyPlayer
 from local import AudioPlayer
-import json
 import os
 import env
 
@@ -30,6 +29,24 @@ def get_music_data(db, rfid):
         return data
     else:
         return None
+
+
+def create_player(music_data):
+    """Create audio player instance"""
+    if music_data["source"] == "spotify":
+        player = SpotifyPlayer(
+            music_data["rfid"],
+            music_data["playback_state"],
+            music_data["location"],
+        )
+    else:
+        player = AudioPlayer(
+            music_data["rfid"],
+            music_data["playback_state"],
+            music_data["location"],
+        )
+
+    return player
 
 
 def shutdown(player):
@@ -97,11 +114,7 @@ def main():
                 if player:
                     player.pause_playback()
                     player.save_playback_state()
-                player = SpotifyPlayer(
-                    music_data["rfid"],
-                    music_data["playback_state"],
-                    music_data["location"],
-                )
+                player = create_player(music_data)
                 player.play()
 
             else:
