@@ -2,7 +2,6 @@ import requests
 import os
 import json
 import sqlite3
-import env
 
 
 class SpotifyPlayer:
@@ -97,16 +96,18 @@ class SpotifyPlayer:
             self.base_url + "/me/player/next?device_id=" + self.device_id
         )
         response = requests.post(request_url, headers=self.headers)
+        self.playing = True
 
         if response.status_code != 204:
             print(response.status_code)
 
     def previous_track(self):
-        """Play previous track"""
         request_url = (
             self.base_url + "/me/player/previous?device_id=" + self.device_id
         )
         response = requests.post(request_url, headers=self.headers)
+        self.playing = True
+
         if response.status_code != 204:
             print(response.status_code)
 
