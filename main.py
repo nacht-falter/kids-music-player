@@ -65,6 +65,28 @@ def play_sound(event):
     playsound(f"./sounds/{sounds[event]}.wav")
 
 
+def save_last_played(db, rfid):
+    """Save last played album to database"""
+    cursor = db.cursor()
+    cursor.execute("DELETE FROM last_played")
+    cursor.execute(
+        "INSERT INTO last_played (last_played_rfid) VALUES (?)", (rfid,)
+    )
+    db.commit()
+
+
+def get_last_played(db):
+    """Get last played album from database"""
+    cursor = db.cursor()
+    cursor.execute("SELECT last_played_rfid FROM last_played")
+    result = cursor.fetchone()
+    if result:
+        return result[0]
+        print(result[0])
+    else:
+        return None
+
+
 def shutdown(player):
     """Shutdown computer"""
     if player and not player.playing:
@@ -76,9 +98,16 @@ def shutdown(player):
 
 def main():
     DATABASE_URL = os.environ.get("DATABASE_URL")
+    db = sqlite3.connect(DATABASE_URL)
+
     player = None
     previous_rfid = None
     play_sound("start")
+
+    # Get last played album and load player
+    last_played = get_last_played(db)
+    if last_played:
+        player = create_player(get_music_data(db, last_played))
 
     while True:
         # Wait for RFID input
@@ -101,9 +130,8 @@ def main():
 
         else:
             # Get command and music data from database
-            with sqlite3.connect(DATABASE_URL) as db:
-                command = get_command(db, rfid)
-                music_data = get_music_data(db, rfid)
+            command = get_command(db, rfid)
+            music_data = get_music_data(db, rfid)
 
             # Execute command or play music
             if command:
@@ -113,7 +141,6 @@ def main():
                             player.pause_playback()
                         break
                     else:
-                        play_sound("click")
                         play_sound("confirm_shutdown")
                         print("confirm shutdown")
                 else:
@@ -131,6 +158,8 @@ def main():
                 play_sound("confirm")
                 player = create_player(music_data)
                 player.play()
+
+                save_last_played(db, music_data["rfid"])
 
             else:
                 print("Unknown RFID")
