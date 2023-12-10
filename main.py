@@ -60,7 +60,6 @@ def main():
     DATABASE_URL = os.environ.get("DATABASE_URL")
     player = None
     previous_rfid = None
-    repeat_counter = 0
 
     while True:
         # Wait for RFID input
@@ -73,21 +72,12 @@ def main():
         if not rfid:
             break
 
-        if previous_rfid == rfid:
-            repeat_counter += 1
-        else:
-            repeat_counter = 0
-
         # Check if RFID is already playing
         if player and rfid == player.rfid:
-            if repeat_counter > 1:
-                if player.playing:
-                    player.restart_playback()
-                else:
-                    player.toggle_playback()
-                repeat_counter = 0
+            if player.playing:
+                player.restart_playback()
             else:
-                print("Already playing")
+                player.toggle_playback()
 
         else:
             # Get command and music data from database
@@ -98,7 +88,7 @@ def main():
             # Execute command or play music
             if command:
                 if command == "shutdown":
-                    if repeat_counter > 0:
+                    if rfid == previous_rfid:
                         if player:
                             player.pause_playback()
                         break
