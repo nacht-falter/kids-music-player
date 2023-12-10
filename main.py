@@ -3,6 +3,7 @@ import sqlite3
 from spotify import SpotifyPlayer
 from local import AudioPlayer
 import os
+from playsound import playsound
 import env
 
 
@@ -49,17 +50,35 @@ def create_player(music_data):
     return player
 
 
+def play_sound(event):
+    """Play sound file associated with event"""
+    sounds = {
+        "start": "start",
+        "confirm": "confirm",
+        "error": "error",
+        "next_track": "click",
+        "previous_track": "click",
+        "toggle_playback": "click",
+        "confirm_shutdown": "confirm_shutdown",
+        "shutdown": "shutdown"
+    }
+    playsound(f"./sounds/{sounds[event]}.wav")
+
+
 def shutdown(player):
     """Shutdown computer"""
     if player and not player.playing:
+        player.pause_playback()
         player.save_playback_state()
-        print("\nShutting down...")
+    print("\nShutting down...")
+    play_sound("shutdown")
 
 
 def main():
     DATABASE_URL = os.environ.get("DATABASE_URL")
     player = None
     previous_rfid = None
+    play_sound("start")
 
     while True:
         # Wait for RFID input
@@ -74,6 +93,7 @@ def main():
 
         # Check if RFID is already playing
         if player and rfid == player.rfid:
+            play_sound("confirm")
             if player.playing:
                 player.restart_playback()
             else:
@@ -93,22 +113,28 @@ def main():
                             player.pause_playback()
                         break
                     else:
+                        play_sound("click")
+                        play_sound("confirm_shutdown")
                         print("confirm shutdown")
                 else:
                     if player:
+                        play_sound(command)
                         getattr(player, command)()
                     else:
+                        play_sound("error")
                         print("No player found")
 
             elif music_data:
                 if player:
                     player.pause_playback()
                     player.save_playback_state()
+                play_sound("confirm")
                 player = create_player(music_data)
                 player.play()
 
             else:
                 print("Unknown RFID")
+                play_sound("error")
 
             previous_rfid = rfid
 
