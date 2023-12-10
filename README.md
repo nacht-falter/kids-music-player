@@ -8,4 +8,4 @@ The original version of the player used [MPD](https://www.musicpd.org/) (Music P
 
 The original version written in Bash can be found [here](https://github.com/nacht-falter/kids-music-player/tree/legacy)
 
-![Music Player](musicplayer.JPG)
+![Music Player](musicplayer.jpg)
