@@ -1,9 +1,11 @@
 from threading import Timer
 import sqlite3
-from spotify import SpotifyPlayer
-from local import AudioPlayer
 import os
 from playsound import playsound
+
+from spotify import SpotifyPlayer
+from local import AudioPlayer
+import db_setup
 import env
 
 
@@ -60,7 +62,7 @@ def play_sound(event):
         "previous_track": "click",
         "toggle_playback": "click",
         "confirm_shutdown": "confirm_shutdown",
-        "shutdown": "shutdown"
+        "shutdown": "shutdown",
     }
     playsound(f"./sounds/{sounds[event]}.wav")
 
@@ -97,7 +99,12 @@ def shutdown(player):
 
 
 def main():
+    # Prepare database:
     DATABASE_URL = os.environ.get("DATABASE_URL")
+
+    if not os.path.exists(DATABASE_URL):
+        db_setup.create_db(DATABASE_URL)
+
     db = sqlite3.connect(DATABASE_URL)
 
     player = None
