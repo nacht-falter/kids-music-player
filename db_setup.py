@@ -31,3 +31,5 @@ def create_db(database_url):
         db.close()
     else:
         print("Database exists. Skipping...")
+
+

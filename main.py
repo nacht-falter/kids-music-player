@@ -5,6 +5,7 @@ from playsound import playsound
 
 from spotify import SpotifyPlayer
 from local import AudioPlayer
+import register_rfid
 import db_setup
 import env
 
@@ -107,6 +108,9 @@ def main():
 
     db = sqlite3.connect(DATABASE_URL)
 
+    # Check if command RFIDs are registered
+    register_rfid.register_commands(db)
+
     player = None
     previous_rfid = None
     play_sound("start")
@@ -114,7 +118,11 @@ def main():
     # Get last played album and load player
     last_played = get_last_played(db)
     if last_played:
-        player = create_player(get_music_data(db, last_played))
+        print(last_played)
+        music_data = get_music_data(db, last_played)
+        player = create_player(music_data)
+        print(player.rfid)
+        print(player.location)
 
     while True:
         # Wait for RFID input
@@ -150,6 +158,12 @@ def main():
                     else:
                         play_sound("confirm_shutdown")
                         print("confirm shutdown")
+
+                elif command == "register_rfid":
+                    if player:
+                        player.pause_playback()
+                    register_rfid.register_spotify_rfid(db)
+
                 else:
                     if player:
                         play_sound(command)
@@ -174,6 +188,7 @@ def main():
 
             previous_rfid = rfid
 
+    db.close()
     shutdown(player)
 
 
