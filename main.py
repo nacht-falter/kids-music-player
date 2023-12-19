@@ -7,7 +7,8 @@ from spotify import SpotifyPlayer
 from local import AudioPlayer
 import register_rfid
 import db_setup
-import led
+
+# import led
 import env
 
 
@@ -86,18 +87,55 @@ def get_last_played(db):
     result = cursor.fetchone()
     if result:
         return result[0]
-        print(result[0])
     else:
         return None
 
 
+def handle_already_playing(player):
+    """Handle already playing album"""
+    if player.playing:
+        player.restart_playback()
+    else:
+        player.toggle_playback()
+
+
+def handle_shutdown_command(command, rfid, previous_rfid, player):
+    """Handle shutdown command"""
+    if command == "shutdown":
+        if rfid == previous_rfid:
+            if player:
+                player.pause_playback()
+            return True
+        else:
+            play_sound("confirm_shutdown")
+    return False
+
+
+def handle_register_rfid_command(command, player, db):
+    """Handle register RFID command"""
+    if command == "register_rfid":
+        if player:
+            player.pause_playback()
+        register_rfid.register_spotify_rfid(db)
+
+
+def handle_other_commands(command, player):
+    """Handle all other commands"""
+    if command != "shutdown" and command != "register_rfid":
+        if player:
+            play_sound(command)
+            getattr(player, command)()
+        else:
+            play_sound("error")
+
+
 def shutdown(player):
     """Shutdown computer"""
+    play_sound("shutdown")
     if player and not player.playing:
         player.pause_playback()
         player.save_playback_state()
     print("\nShutting down...")
-    play_sound("shutdown")
 
 
 def main():
@@ -114,18 +152,15 @@ def main():
 
     player = None
     previous_rfid = None
-    led.toggle_led(14)
-    led.toggle_led(23)
+    # led.toggle_led(14)
+    # led.toggle_led(23)
     play_sound("start")
 
     # Get last played album and load player
     last_played = get_last_played(db)
     if last_played:
-        print(last_played)
         music_data = get_music_data(db, last_played)
         player = create_player(music_data)
-        print(player.rfid)
-        print(player.location)
 
     while True:
         # Wait for RFID input
@@ -138,15 +173,12 @@ def main():
         if not rfid:
             break
 
-        led.flash_led(23)
+        # led.flash_led(23)
 
         # Check if RFID is already playing
         if player and rfid == player.rfid:
             play_sound("confirm")
-            if player.playing:
-                player.restart_playback()
-            else:
-                player.toggle_playback()
+            handle_already_playing(player)
 
         else:
             # Get command and music data from database
@@ -155,33 +187,18 @@ def main():
 
             # Execute command or play music
             if command:
-                if command == "shutdown":
-                    if rfid == previous_rfid:
-                        if player:
-                            player.pause_playback()
-                        break
-                    else:
-                        play_sound("confirm_shutdown")
-                        print("confirm shutdown")
-
-                elif command == "register_rfid":
-                    if player:
-                        player.pause_playback()
-                    register_rfid.register_spotify_rfid(db)
-
-                else:
-                    if player:
-                        play_sound(command)
-                        getattr(player, command)()
-                    else:
-                        play_sound("error")
-                        print("No player found")
+                if handle_shutdown_command(
+                    command, rfid, previous_rfid, player
+                ):
+                    break
+                handle_register_rfid_command(command, player, db)
+                handle_other_commands(command, player)
 
             elif music_data:
+                play_sound("confirm")
                 if player:
                     player.pause_playback()
                     player.save_playback_state()
-                play_sound("confirm")
                 player = create_player(music_data)
                 player.play()
 
