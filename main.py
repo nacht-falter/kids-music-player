@@ -7,8 +7,7 @@ from spotify import SpotifyPlayer
 from local import AudioPlayer
 import register_rfid
 import db_setup
-
-# import led
+import led
 import env
 
 
@@ -152,8 +151,8 @@ def main():
 
     player = None
     previous_rfid = None
-    # led.toggle_led(14)
-    # led.toggle_led(23)
+    led.turn_off_led(14)
+    led.turn_on_led(23)
     play_sound("start")
 
     # Get last played album and load player
