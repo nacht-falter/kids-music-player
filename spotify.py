@@ -2,6 +2,7 @@ import requests
 import os
 import json
 import sqlite3
+from playsound import playsound
 
 
 class SpotifyPlayer:
@@ -40,7 +41,7 @@ class SpotifyPlayer:
             response.raise_for_status()
             return response.json()["access_token"]
         except requests.RequestException as e:
-            print("Failed to get Spotify auth token: " + str(e))
+            self.handle_exception("Failed to get Spotify auth token:", e)
 
     def check_playback_status(self):
         print("Checking playback status...")
@@ -57,7 +58,7 @@ class SpotifyPlayer:
             return response.json()
 
         except requests.RequestException as e:
-            print("Failed to check playback status: " + str(e))
+            self.handle_exception("Failed to get playback status:", e)
             return None
 
     def play(self):
@@ -79,7 +80,7 @@ class SpotifyPlayer:
             self.playing = True
 
         except requests.RequestException as e:
-            print("Failed to play: " + str(e))
+            self.handle_exception("Failed to play:", e)
 
     def pause_playback(self):
         print("Pausing playback...")
@@ -93,7 +94,7 @@ class SpotifyPlayer:
             self.playing = False
 
         except requests.RequestException as e:
-            print("Failed to pause playback: " + str(e))
+            self.handle_exception("Failed to pause playback:", e)
 
     def toggle_playback(self):
         print("Toggling playback...")
@@ -113,7 +114,7 @@ class SpotifyPlayer:
             response.raise_for_status()
             self.playing = True
         except requests.RequestException as e:
-            print("Next track failed: " + str(e))
+            self.handle_exception("Next track failed:", e)
 
     def previous_track(self):
         print("Previous track...")
@@ -126,7 +127,7 @@ class SpotifyPlayer:
             response.raise_for_status()
             self.playing = True
         except requests.RequestException as e:
-            print("Previous track failed: " + str(e))
+            self.handle_exception("Previous track failed:", e)
 
     def restart_playback(self):
         print("Restart playback...")
@@ -146,7 +147,7 @@ class SpotifyPlayer:
             response.raise_for_status()
             self.playing = True
         except requests.RequestException as e:
-            print("Restart playback failed: " + str(e))
+            self.handle_exception("Restart playback failed:", e)
 
     def save_playback_state(self):
         print("Saving playback state...")
@@ -165,3 +166,7 @@ class SpotifyPlayer:
                 )
         else:
             print("No playback state to save.")
+
+    def handle_exception(self, message, e):
+        playsound("sounds/error.wav")
+        print(message + " " + str(e))
