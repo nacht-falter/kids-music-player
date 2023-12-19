@@ -15,24 +15,29 @@ def spotify_auth():
     token_headers = {
         "Authorization": f"Basic {usercreds}",
     }
-    response = requests.post(token_url, data=token_data, headers=token_headers)
-    token_response_data = response.json()
-    if response.status_code == 200:
+
+    try:
+        response = requests.post(
+            token_url, data=token_data, headers=token_headers
+        )
+        token_response_data = response.json()
+        response.raise_for_status()
         print("Token refreshed")
         return token_response_data["access_token"]
-    else:
-        print(response.status_code)
-        return None
+
+    except requests.RequestException as e:
+        handle_exception("Failed to get Spotify auth token:", e)
 
 
 def get_spotify_uri(base_url, headers):
     request_url = base_url + "/me/player/currently-playing"
-    response = requests.get(request_url, headers=headers)
-    if response.status_code == 200:
-        return response.json()["context"]["uri"]
-    else:
-        print(response.status_code)
-        return None
+
+    try:
+        response = requests.get(request_url, headers=headers)
+        response.raise_for_status()
+
+    except requests.RequestException as e:
+        handle_exception("Failed to get playback status:", e)
 
 
 def get_rfid():
@@ -59,6 +64,9 @@ def check_if_rfid_exists(db, rfid):
 
 
 def speak(text):
+    file = "sounds/speech/instructions.mp3"
+    if os.path.exists(file):
+        os.remove(file)
     gtts.gTTS(text=text).save("sounds/speech/instructions.mp3")
     playsound("sounds/speech/instructions.mp3")
 
@@ -71,7 +79,6 @@ def create_database_entry(db, rfid, table, value):
                 "INSERT INTO commands (rfid, command) VALUES (?, ?)",
                 (rfid, value),
             )
-            speak("RFID successfully registered.")
         elif table == "music":
             cursor.execute(
                 "INSERT INTO music (rfid, source, location) VALUES (?, ?, ?)",
@@ -92,6 +99,7 @@ def register_spotify_rfid(db):
     rfid = get_rfid()
     uri = get_spotify_uri(base_url, headers)
     create_database_entry(db, rfid, "music", uri)
+    speak("RFID successfully registered.")
 
 
 def register_commands(db):
@@ -112,3 +120,9 @@ def register_commands(db):
             create_database_entry(db, rfid, "commands", command)
 
         speak("RFIDs successfully registered.")
+
+
+def handle_exception(message, e):
+    print(f"{message}: {str(e)}")
+    playsound("sounds/error.wav")
+    exit(1)

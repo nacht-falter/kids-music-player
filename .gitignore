@@ -2,3 +2,4 @@ env.py
 /venv
 /__pycache__
 *.db
+/sounds/speech/instructions*
