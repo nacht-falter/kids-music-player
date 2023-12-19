@@ -18,8 +18,10 @@ class SpotifyPlayer:
         )
         self.location = location
         self.playing = False
+        print("Spotify player initialized.")
 
     def spotify_auth(self):
+        print("Getting Spotify auth token...")
         usercreds = os.environ.get("USERCREDS")
         refresh_token = os.environ.get("REFRESH_TOKEN")
         token_url = "https://accounts.spotify.com/api/token"
@@ -30,88 +32,104 @@ class SpotifyPlayer:
         token_headers = {
             "Authorization": f"Basic {usercreds}",
         }
-        response = requests.post(
-            token_url, data=token_data, headers=token_headers
-        )
-        token_response_data = response.json()
-        if response.status_code == 200:
-            print("Token refreshed")
-            return token_response_data["access_token"]
-        else:
-            print(response.status_code)
-            return None
+
+        try:
+            response = requests.post(
+                token_url, data=token_data, headers=token_headers
+            )
+            response.raise_for_status()
+            return response.json()["access_token"]
+        except requests.RequestException as e:
+            print("Failed to get Spotify auth token: " + str(e))
 
     def check_playback_status(self):
+        print("Checking playback status...")
         request_url = self.base_url + "/me/player/currently-playing"
-        response = requests.get(request_url, headers=self.headers)
 
-        if response.status_code == 200:
+        try:
+            response = requests.get(request_url, headers=self.headers)
+
+            if response.status_code == 204:
+                print("No content currently playing.")
+                return None
+
+            response.raise_for_status()
             return response.json()
-        else:
-            print(response.status_code)
+
+        except requests.RequestException as e:
+            print("Failed to check playback status: " + str(e))
             return None
 
     def play(self):
+        print("Playing...")
         request_url = (
             self.base_url + "/me/player/play?device_id=" + self.device_id
         )
         data = {
             "context_uri": self.location,
-            "offset": {"position": self.playback_state["offset"]},
-            "position_ms": self.playback_state["position_ms"],
+            "offset": {"position": self.playback_state.get("offset")},
+            "position_ms": self.playback_state.get("position_ms"),
         }
-        response = requests.put(request_url, headers=self.headers, json=data)
-        self.playing = True
 
-        if response.status_code != 204:
-            print(response.status_code)
-
-    def toggle_playback(self):
-        if self.check_playback_status().get("is_playing"):
-            request_url = (
-                self.base_url + "/me/player/pause?device_id=" + self.device_id
+        try:
+            response = requests.put(
+                request_url, headers=self.headers, json=data
             )
-        else:
-            request_url = (
-                self.base_url + "/me/player/play?device_id=" + self.device_id
-            )
-        response = requests.put(request_url, headers=self.headers)
-        self.playing = not self.playing
+            response.raise_for_status()
+            self.playing = True
 
-        if response.status_code != 204:
-            print(response.status_code)
+        except requests.RequestException as e:
+            print("Failed to play: " + str(e))
 
     def pause_playback(self):
+        print("Pausing playback...")
         request_url = (
             self.base_url + "/me/player/pause?device_id=" + self.device_id
         )
-        response = requests.put(request_url, headers=self.headers)
-        self.playing = False
 
-        if response.status_code != 204:
-            print(response.status_code)
+        try:
+            response = requests.put(request_url, headers=self.headers)
+            response.raise_for_status()
+            self.playing = False
+
+        except requests.RequestException as e:
+            print("Failed to pause playback: " + str(e))
+
+    def toggle_playback(self):
+        print("Toggling playback...")
+        if self.playing:
+            self.pause_playback()
+        else:
+            self.play()
 
     def next_track(self):
+        print("Next track...")
         request_url = (
             self.base_url + "/me/player/next?device_id=" + self.device_id
         )
-        response = requests.post(request_url, headers=self.headers)
-        self.playing = True
 
-        if response.status_code != 204:
-            print(response.status_code)
+        try:
+            response = requests.post(request_url, headers=self.headers)
+            response.raise_for_status()
+            self.playing = True
+        except requests.RequestException as e:
+            print("Next track failed: " + str(e))
 
     def previous_track(self):
+        print("Previous track...")
         request_url = (
             self.base_url + "/me/player/previous?device_id=" + self.device_id
         )
-        response = requests.post(request_url, headers=self.headers)
-        self.playing = True
 
-        if response.status_code != 204:
-            print(response.status_code)
+        try:
+            response = requests.post(request_url, headers=self.headers)
+            response.raise_for_status()
+            self.playing = True
+        except requests.RequestException as e:
+            print("Previous track failed: " + str(e))
 
     def restart_playback(self):
+        print("Restart playback...")
         request_url = (
             self.base_url + "/me/player/play?device_id=" + self.device_id
         )
@@ -120,22 +138,30 @@ class SpotifyPlayer:
             "offset": {"position": 0},
             "position_ms": 0,
         }
-        response = requests.put(request_url, headers=self.headers, json=data)
-        self.playing = True
 
-        if response.status_code != 204:
-            print(response.status_code)
+        try:
+            response = requests.put(
+                request_url, headers=self.headers, json=data
+            )
+            response.raise_for_status()
+            self.playing = True
+        except requests.RequestException as e:
+            print("Restart playback failed: " + str(e))
 
     def save_playback_state(self):
+        print("Saving playback state...")
         playback_state = self.check_playback_status()
-        position_ms = playback_state.get("progress_ms")
-        track_number = playback_state.get("item").get("track_number")
-        self.playback_state = {
-            "offset": track_number - 1,
-            "position_ms": position_ms,
-        }
-        with sqlite3.connect(self.database_url) as db:
-            db.cursor().execute(
-                "UPDATE music SET playback_state = ? WHERE rfid = ?",
-                (json.dumps(self.playback_state), self.rfid),
-            )
+        if playback_state:
+            position_ms = playback_state.get("progress_ms")
+            track_number = playback_state.get("item").get("track_number")
+            self.playback_state = {
+                "offset": track_number - 1,
+                "position_ms": position_ms,
+            }
+            with sqlite3.connect(self.database_url) as db:
+                db.cursor().execute(
+                    "UPDATE music SET playback_state = ? WHERE rfid = ?",
+                    (json.dumps(self.playback_state), self.rfid),
+                )
+        else:
+            print("No playback state to save.")
