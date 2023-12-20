@@ -193,7 +193,7 @@ def main():
 
     # Assign buttons
     button_3 = gpiozero.Button(3)
-    button_3.when_pressed = handle_buttons("shutdown", player)
+    button_3.when_pressed = lambda: handle_buttons("toggle_playback", player)
 
     play_sound("start")
 
@@ -201,11 +201,6 @@ def main():
         target=check_playback_status, args=(player,)
     )
     playback_status_thread.start()
-
-    wait_for_power_button_thread = threading.Thread(
-        target=buttons.wait_for_power_button, args=(shutdown, player)
-    )
-    wait_for_power_button_thread.start()
 
     while True:
         # Wait for RFID input
