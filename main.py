@@ -118,11 +118,12 @@ def handle_other_commands(command, player):
             play_sound("error")
 
 
-def shutdown(player):
+def shutdown(player, db):
     """Shutdown computer"""
     play_sound("shutdown")
     if player:
         player.save_playback_state()
+    db.close()
     print("\nShutting down...")
     # os.system("systemctl poweroff")
 
@@ -227,7 +228,7 @@ def main():
     while True:
         # Wait for RFID input
         timeout = 3600
-        timer = threading.Timer(timeout, shutdown, [player])
+        timer = threading.Timer(timeout, shutdown, [player, db])
         timer.start()
         rfid = input("Enter RFID: ")
         timer.cancel()
