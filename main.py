@@ -3,7 +3,7 @@ import os
 from playsound import playsound
 import time
 import threading
-import gpiozero
+from gpiozero import Button
 
 from spotify import SpotifyPlayer
 from local import AudioPlayer
@@ -192,14 +192,14 @@ def main():
     led.turn_on_led(23)
 
     # Assign buttons
-    button_3 = gpiozero.Button(3)
+    button_3 = Button(3)
     button_3.when_pressed = lambda: handle_buttons("shutdown", player)
-    button_11 = gpiozero.Button(11)
-    button_11.when_pressed = lambda: handle_buttons("toggle_playback", player)
-    button_13 = gpiozero.Button(13)
-    button_13.when_pressed = lambda: handle_buttons("next_track", player)
-    button_15 = gpiozero.Button(15)
-    button_15.when_pressed = lambda: handle_buttons("previous_track", player)
+    button_17 = Button(17)
+    button_17.when_pressed = lambda: handle_buttons("toggle_playback", player)
+    button_27 = Button(27)
+    button_27.when_pressed = lambda: handle_buttons("next_track", player)
+    button_22 = Button(22)
+    button_22.when_pressed = lambda: handle_buttons("previous_track", player)
 
     play_sound("start")
 
