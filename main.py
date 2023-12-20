@@ -9,6 +9,7 @@ from local import AudioPlayer
 import register_rfid
 import db_setup
 import led
+import buttons
 import env
 
 
@@ -174,6 +175,11 @@ def main():
         target=check_playback_status, args=(player,)
     )
     playback_status_thread.start()
+
+    wait_for_power_button_thread = threading.Thread(
+        target=buttons.wait_for_power_button
+    )
+    wait_for_power_button_thread.start()
 
     while True:
         # Wait for RFID input
