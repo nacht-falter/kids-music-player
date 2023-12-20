@@ -1,7 +1,8 @@
-from threading import Timer
 import sqlite3
 import os
 from playsound import playsound
+import time
+import threading
 
 from spotify import SpotifyPlayer
 from local import AudioPlayer
@@ -98,14 +99,14 @@ def handle_already_playing(player):
         player.toggle_playback()
 
 
-def handle_shutdown_command(command, rfid, previous_rfid, player):
+def handle_shutdown_command(command, rfid, previous_rfid):
     """Handle shutdown command"""
     if command == "shutdown":
         if rfid == previous_rfid:
-            if player:
-                player.pause_playback()
+            print(f"{rfid} {previous_rfid}")
             return True
         else:
+            print(f"{rfid} {previous_rfid}")
             play_sound("confirm_shutdown")
     return False
 
@@ -131,10 +132,17 @@ def handle_other_commands(command, player):
 def shutdown(player):
     """Shutdown computer"""
     play_sound("shutdown")
-    if player and not player.playing:
-        player.pause_playback()
+    if player:
         player.save_playback_state()
     print("\nShutting down...")
+    # os.system("systemctl poweroff")
+
+
+def check_playback_status(player):
+    while True:
+        if player:
+            player.check_playback_status()
+            time.sleep(10)
 
 
 def main():
@@ -151,9 +159,6 @@ def main():
 
     player = None
     previous_rfid = None
-    led.turn_off_led(14)
-    led.turn_on_led(23)
-    play_sound("start")
 
     # Get last played album and load player
     last_played = get_last_played(db)
@@ -161,10 +166,19 @@ def main():
         music_data = get_music_data(db, last_played)
         player = create_player(music_data)
 
+    led.turn_off_led(14)
+    led.turn_on_led(23)
+    play_sound("start")
+
+    playback_status_thread = threading.Thread(
+        target=check_playback_status, args=(player,)
+    )
+    playback_status_thread.start()
+
     while True:
         # Wait for RFID input
         timeout = 3600
-        timer = Timer(timeout, shutdown, [player])
+        timer = threading.Timer(timeout, shutdown, [player])
         timer.start()
         rfid = input("Enter RFID: ")
         timer.cancel()
@@ -172,7 +186,7 @@ def main():
         if not rfid:
             break
 
-        # led.flash_led(23)
+        led.flash_led(23)
 
         # Check if RFID is already playing
         if player and rfid == player.rfid:
@@ -186,9 +200,7 @@ def main():
 
             # Execute command or play music
             if command:
-                if handle_shutdown_command(
-                    command, rfid, previous_rfid, player
-                ):
+                if handle_shutdown_command(command, rfid, previous_rfid):
                     break
                 handle_register_rfid_command(command, player, db)
                 handle_other_commands(command, player)
@@ -207,7 +219,7 @@ def main():
                 print("Unknown RFID")
                 play_sound("error")
 
-            previous_rfid = rfid
+        previous_rfid = rfid
 
     db.close()
     shutdown(player)
