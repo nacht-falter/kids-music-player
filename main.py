@@ -166,10 +166,9 @@ class ButtonHandler:
 
         if button == "shutdown":
             if self.consecutive_presses == 1:
-                print("Press again to shutdown")
                 play_sound("confirm_shutdown")
             elif self.consecutive_presses == 2:
-                print("Shutting down...")
+                self.consecutive_presses = 0
                 shutdown(self.player)
 
         elif button == "toggle_playback":
