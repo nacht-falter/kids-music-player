@@ -215,7 +215,7 @@ def main():
     led.turn_on_led(23)
 
     # create button handler
-    ButtonHandler(player)
+    ButtonHandler(player, db)
 
     playback_status_thread = threading.Thread(
         target=check_playback_status, args=(player,)
