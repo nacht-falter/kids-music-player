@@ -123,6 +123,8 @@ def shutdown(player):
     play_sound("shutdown")
     if player:
         player.save_playback_state()
+    led.turn_on_led(14)
+    led.turn_off_led(23)
     print("\nShutting down...")
     # os.system("systemctl poweroff")
 
