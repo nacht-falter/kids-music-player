@@ -44,8 +44,8 @@ class SpotifyPlayer:
             self.handle_exception("Failed to get Spotify auth token:", e)
 
     def check_playback_status(self):
-        print("Checking playback status...")
-        request_url = self.base_url + "/me/player/currently-playing"
+        print("Checking spotify playback status...")
+        request_url = self.base_url + "/me/player"
 
         try:
             response = requests.get(request_url, headers=self.headers)
@@ -55,13 +55,16 @@ class SpotifyPlayer:
                 return None
 
             response.raise_for_status()
+
+            if response.json().get("device").get("id") == self.device_id:
+                self.playing = response.json().get("is_playing")
             return response.json()
 
         except requests.RequestException as e:
             self.handle_exception("Failed to get playback status:", e)
             return None
 
-    def play(self):
+    def play(self, toggle=False):
         print("Playing...")
         request_url = (
             self.base_url + "/me/player/play?device_id=" + self.device_id
@@ -73,9 +76,12 @@ class SpotifyPlayer:
         }
 
         try:
-            response = requests.put(
-                request_url, headers=self.headers, json=data
-            )
+            if toggle:  # make request without data
+                response = requests.put(request_url, headers=self.headers)
+            else:
+                response = requests.put(
+                    request_url, headers=self.headers, json=data
+                )
             response.raise_for_status()
             self.playing = True
 
@@ -88,20 +94,21 @@ class SpotifyPlayer:
             self.base_url + "/me/player/pause?device_id=" + self.device_id
         )
 
-        try:
-            response = requests.put(request_url, headers=self.headers)
-            response.raise_for_status()
-            self.playing = False
+        if self.playing:
+            try:
+                response = requests.put(request_url, headers=self.headers)
+                response.raise_for_status()
+                self.playing = False
 
-        except requests.RequestException as e:
-            self.handle_exception("Failed to pause playback:", e)
+            except requests.RequestException as e:
+                self.handle_exception("Failed to pause playback:", e)
 
     def toggle_playback(self):
         print("Toggling playback...")
         if self.playing:
             self.pause_playback()
         else:
-            self.play()
+            self.play(toggle=True)
 
     def next_track(self):
         print("Next track...")
@@ -126,6 +133,7 @@ class SpotifyPlayer:
             response = requests.post(request_url, headers=self.headers)
             response.raise_for_status()
             self.playing = True
+
         except requests.RequestException as e:
             self.handle_exception("Previous track failed:", e)
 
@@ -146,6 +154,7 @@ class SpotifyPlayer:
             )
             response.raise_for_status()
             self.playing = True
+
         except requests.RequestException as e:
             self.handle_exception("Restart playback failed:", e)
 
@@ -169,4 +178,4 @@ class SpotifyPlayer:
 
     def handle_exception(self, message, e):
         playsound("sounds/error.wav")
-        print(message + " " + str(e))
+        print(f"{message}: {e})")
