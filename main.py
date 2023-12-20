@@ -193,7 +193,13 @@ def main():
 
     # Assign buttons
     button_3 = gpiozero.Button(3)
-    button_3.when_pressed = lambda: handle_buttons("toggle_playback", player)
+    button_3.when_pressed = lambda: handle_buttons("shutdown", player)
+    button_11 = gpiozero.Button(11)
+    button_11.when_pressed = lambda: handle_buttons("toggle_playback", player)
+    button_13 = gpiozero.Button(13)
+    button_13.when_pressed = lambda: handle_buttons("next_track", player)
+    button_15 = gpiozero.Button(15)
+    button_15.when_pressed = lambda: handle_buttons("previous_track", player)
 
     play_sound("start")
 
