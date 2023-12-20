@@ -118,12 +118,11 @@ def handle_other_commands(command, player):
             play_sound("error")
 
 
-def shutdown(player, db):
+def shutdown(player):
     """Shutdown computer"""
     play_sound("shutdown")
     if player:
         player.save_playback_state()
-    db.close()
     print("\nShutting down...")
     # os.system("systemctl poweroff")
 
@@ -136,8 +135,7 @@ def check_playback_status(player):
 
 
 class ButtonHandler:
-    def __init__(self, player, db):
-        self.db = db
+    def __init__(self, player):
         self.player = player
         self.last_button = None
         self.consecutive_presses = 0
@@ -170,7 +168,7 @@ class ButtonHandler:
             if self.consecutive_presses == 1:
                 play_sound("confirm_shutdown")
             elif self.consecutive_presses == 2:
-                shutdown(self.player, self.db)
+                shutdown(self.player)
 
         elif button == "toggle_playback":
             if self.player:
@@ -216,7 +214,7 @@ def main():
     led.turn_on_led(23)
 
     # create button handler
-    ButtonHandler(player, db)
+    ButtonHandler(player)
 
     playback_status_thread = threading.Thread(
         target=check_playback_status, args=(player,)
@@ -228,7 +226,7 @@ def main():
     while True:
         # Wait for RFID input
         timeout = 3600
-        timer = threading.Timer(timeout, shutdown, [player, db])
+        timer = threading.Timer(timeout, shutdown, [player])
         timer.start()
         rfid = input("Enter RFID: ")
         timer.cancel()
