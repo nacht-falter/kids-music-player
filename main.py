@@ -3,13 +3,13 @@ import os
 from playsound import playsound
 import time
 import threading
+import gpiozero
 
 from spotify import SpotifyPlayer
 from local import AudioPlayer
 import register_rfid
 import db_setup
 import led
-import buttons
 import env
 
 
@@ -130,6 +130,27 @@ def handle_other_commands(command, player):
             play_sound("error")
 
 
+def handle_buttons(button, player):
+    """Handle button presses"""
+    if button == "toggle_playback":
+        if player:
+            player.toggle_playback()
+        else:
+            play_sound("error")
+    elif button == "next_track":
+        if player:
+            player.next_track()
+        else:
+            play_sound("error")
+    elif button == "previous_track":
+        if player:
+            player.previous_track()
+        else:
+            play_sound("error")
+    elif button == "shutdown":
+        shutdown(player)
+
+
 def shutdown(player):
     """Shutdown computer"""
     play_sound("shutdown")
@@ -169,6 +190,11 @@ def main():
 
     led.turn_off_led(14)
     led.turn_on_led(23)
+
+    # Assign buttons
+    button_3 = gpiozero.Button(3)
+    button_3.when_pressed = handle_buttons("shutdown", player)
+
     play_sound("start")
 
     playback_status_thread = threading.Thread(
@@ -177,7 +203,7 @@ def main():
     playback_status_thread.start()
 
     wait_for_power_button_thread = threading.Thread(
-        target=buttons.wait_for_power_button
+        target=buttons.wait_for_power_button, args=(shutdown, player)
     )
     wait_for_power_button_thread.start()
 
