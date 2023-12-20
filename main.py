@@ -110,7 +110,7 @@ def handle_register_rfid_command(command, player, db):
 
 def handle_other_commands(command, player):
     """Handle all other commands"""
-    if command != "shutdown" and command != "register_rfid":
+    if command != "register_rfid":
         if player:
             play_sound(command)
             getattr(player, command)()
@@ -135,7 +135,8 @@ def check_playback_status(player):
 
 
 class ButtonHandler:
-    def __init__(self, player):
+    def __init__(self, player, db):
+        self.db = db
         self.player = player
         self.last_button = None
         self.consecutive_presses = 0
@@ -164,26 +165,24 @@ class ButtonHandler:
             self.last_button = button
             self.consecutive_presses = 1
 
-        if self.consecutive_presses == 2 and button == "shutdown":
-            shutdown(self.player)
+        if button == "shutdown":
+            if self.consecutive_presses == 1:
+                play_sound("confirm_shutdown")
+            elif self.consecutive_presses == 2:
+                shutdown(self.player, self.db)
 
-        if button == "toggle_playback":
-            self.player.toggle_playback()
-        elif button == "next_track":
-            self.player.next_track()
-        elif button == "previous_track":
-            self.player.previous_track()
-
-        if button == "toggle_playback":
+        elif button == "toggle_playback":
             if self.player:
                 self.player.toggle_playback()
             else:
                 play_sound("error")
+
         elif button == "next_track":
             if self.player:
                 self.player.next_track()
             else:
                 play_sound("error")
+
         elif button == "previous_track":
             if self.player:
                 self.player.previous_track()
@@ -266,9 +265,6 @@ def main():
             else:
                 print("Unknown RFID")
                 play_sound("error")
-
-    db.close()
-    shutdown(player)
 
 
 if __name__ == "__main__":
