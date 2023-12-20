@@ -100,18 +100,6 @@ def handle_already_playing(player):
         player.toggle_playback()
 
 
-def handle_shutdown_command(command, rfid, previous_rfid):
-    """Handle shutdown command"""
-    if command == "shutdown":
-        if rfid == previous_rfid:
-            print(f"{rfid} {previous_rfid}")
-            return True
-        else:
-            print(f"{rfid} {previous_rfid}")
-            play_sound("confirm_shutdown")
-    return False
-
-
 def handle_register_rfid_command(command, player, db):
     """Handle register RFID command"""
     if command == "register_rfid":
@@ -130,27 +118,6 @@ def handle_other_commands(command, player):
             play_sound("error")
 
 
-def handle_buttons(button, player):
-    """Handle button presses"""
-    if button == "toggle_playback":
-        if player:
-            player.toggle_playback()
-        else:
-            play_sound("error")
-    elif button == "next_track":
-        if player:
-            player.next_track()
-        else:
-            play_sound("error")
-    elif button == "previous_track":
-        if player:
-            player.previous_track()
-        else:
-            play_sound("error")
-    elif button == "shutdown":
-        shutdown(player)
-
-
 def shutdown(player):
     """Shutdown computer"""
     play_sound("shutdown")
@@ -167,6 +134,63 @@ def check_playback_status(player):
             time.sleep(10)
 
 
+class ButtonHandler:
+    def __init__(self, player):
+        self.player = player
+        self.last_button = None
+        self.consecutive_presses = 0
+
+        # Set up buttons with callbacks
+        self.button_3 = Button(3)
+        self.button_3.when_pressed = lambda: self.handle_buttons("shutdown")
+
+        self.button_17 = Button(17)
+        self.button_17.when_pressed = lambda: self.handle_buttons(
+            "toggle_playback"
+        )
+
+        self.button_27 = Button(27)
+        self.button_27.when_pressed = lambda: self.handle_buttons("next_track")
+
+        self.button_22 = Button(22)
+        self.button_22.when_pressed = lambda: self.handle_buttons(
+            "previous_track"
+        )
+
+    def handle_buttons(self, button):
+        if self.last_button == button:
+            self.consecutive_presses += 1
+        else:
+            self.last_button = button
+            self.consecutive_presses = 1
+
+        if self.consecutive_presses == 2 and button == "shutdown":
+            shutdown(self.player)
+
+        if button == "toggle_playback":
+            self.player.toggle_playback()
+        elif button == "next_track":
+            self.player.next_track()
+        elif button == "previous_track":
+            self.player.previous_track()
+
+        if button == "toggle_playback":
+            if self.player:
+                self.player.toggle_playback()
+            else:
+                play_sound("error")
+        elif button == "next_track":
+            if self.player:
+                self.player.next_track()
+            else:
+                play_sound("error")
+        elif button == "previous_track":
+            if self.player:
+                self.player.previous_track()
+            else:
+                play_sound("error")
+
+
 def main():
     # Prepare database:
     DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -180,7 +204,6 @@ def main():
     register_rfid.register_commands(db)
 
     player = None
-    previous_rfid = None
 
     # Get last played album and load player
     last_played = get_last_played(db)
@@ -188,25 +211,19 @@ def main():
         music_data = get_music_data(db, last_played)
         player = create_player(music_data)
 
+    # Handle LED
     led.turn_off_led(14)
     led.turn_on_led(23)
 
-    # Assign buttons
-    button_3 = Button(3)
-    button_3.when_pressed = lambda: handle_buttons("shutdown", player)
-    button_17 = Button(17)
-    button_17.when_pressed = lambda: handle_buttons("toggle_playback", player)
-    button_27 = Button(27)
-    button_27.when_pressed = lambda: handle_buttons("next_track", player)
-    button_22 = Button(22)
-    button_22.when_pressed = lambda: handle_buttons("previous_track", player)
-
-    play_sound("start")
+    # create button handler
+    ButtonHandler(player)
 
     playback_status_thread = threading.Thread(
         target=check_playback_status, args=(player,)
     )
     playback_status_thread.start()
+
+    play_sound("start")
 
     while True:
         # Wait for RFID input
@@ -233,8 +250,6 @@ def main():
 
             # Execute command or play music
             if command:
-                if handle_shutdown_command(command, rfid, previous_rfid):
-                    break
                 handle_register_rfid_command(command, player, db)
                 handle_other_commands(command, player)
 
@@ -251,8 +266,6 @@ def main():
             else:
                 print("Unknown RFID")
                 play_sound("error")
-
-        previous_rfid = rfid
 
     db.close()
     shutdown(player)
