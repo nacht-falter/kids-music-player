@@ -220,7 +220,7 @@ def main():
     led.turn_on_led(23)
 
     # create button handler
-    ButtonHandler(player)
+    button_handler = ButtonHandler(player)
 
     playback_status_thread = threading.Thread(
         target=check_playback_status, args=(player,)
@@ -264,7 +264,7 @@ def main():
                     player.save_playback_state()
                 player = create_player(music_data)
                 player.play()
-                ButtonHandler.player = player
+                button_handler.player = player
 
                 save_last_played(db, music_data["rfid"])
 
