@@ -2,7 +2,6 @@ import os
 import gtts
 from playsound import playsound
 import requests
-import json
 
 
 def spotify_auth():
