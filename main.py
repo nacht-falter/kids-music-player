@@ -264,6 +264,7 @@ def main():
                     player.save_playback_state()
                 player = create_player(music_data)
                 player.play()
+                ButtonHandler.player = player
 
                 save_last_played(db, music_data["rfid"])
 
