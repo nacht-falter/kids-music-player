@@ -237,8 +237,6 @@ def main():
         if not rfid:
             break
 
-        led.flash_led(23)
-
         # Check if RFID is already playing
         if player and rfid == player.rfid:
             play_sound("confirm")
@@ -256,6 +254,7 @@ def main():
 
             elif music_data:
                 play_sound("confirm")
+                led.flash_led(23)
                 if player:
                     player.pause_playback()
                     player.save_playback_state()

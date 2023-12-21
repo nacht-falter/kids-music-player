@@ -30,6 +30,7 @@ def spotify_auth():
 
 
 def get_spotify_uri(base_url, headers):
+    print("Getting Spotify URI...")
     request_url = base_url + "/me/player/currently-playing"
 
     try:
@@ -64,6 +65,7 @@ def check_if_rfid_exists(db, rfid):
 
 
 def speak(text):
+    print(text)
     file = "sounds/speech/instructions.mp3"
     if os.path.exists(file):
         os.remove(file)
@@ -88,6 +90,7 @@ def create_database_entry(db, rfid, table, value):
 
 
 def register_spotify_rfid(db):
+    print("Registering RFID...")
     base_url = "https://api.spotify.com/v1"
     headers = {"Authorization": f"Bearer {spotify_auth()}"}
 
@@ -103,6 +106,7 @@ def register_spotify_rfid(db):
 
 
 def register_commands(db):
+    print("Registering commands...")
     if not db.cursor().execute("SELECT * FROM commands").fetchall():
         commands = {}
         speak("Please scan your RFID for toggling playback")
