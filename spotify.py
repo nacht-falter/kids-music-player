@@ -71,7 +71,7 @@ class SpotifyPlayer:
         )
         data = {
             "context_uri": self.location,
-            "offset": {"position": self.playback_state.get("offset")},
+            "offset": self.playback_state.get("offset"),
             "position_ms": self.playback_state.get("position_ms"),
         }
 
@@ -144,7 +144,7 @@ class SpotifyPlayer:
         )
         data = {
             "context_uri": self.location,
-            "offset": {"position": 0},
+            "offset": 0,
             "position_ms": 0,
         }
 
