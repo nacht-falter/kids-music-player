@@ -175,21 +175,21 @@ class ButtonHandler:
 
         elif button == "toggle_playback":
             if self.player:
-                play_sound("click")
+                play_sound(button)
                 self.player.toggle_playback()
             else:
                 play_sound("error")
 
         elif button == "next_track":
             if self.player:
-                play_sound("click")
+                play_sound(button)
                 self.player.next_track()
             else:
                 play_sound("error")
 
         elif button == "previous_track":
             if self.player:
-                play_sound("click")
+                play_sound(button)
                 self.player.previous_track()
             else:
                 play_sound("error")
