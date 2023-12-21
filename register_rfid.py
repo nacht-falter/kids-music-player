@@ -2,6 +2,7 @@ import os
 import gtts
 from playsound import playsound
 import requests
+import json
 
 
 def spotify_auth():
@@ -30,12 +31,12 @@ def spotify_auth():
 
 
 def get_spotify_uri(base_url, headers):
-    print("Getting Spotify URI...")
     request_url = base_url + "/me/player/currently-playing"
 
     try:
         response = requests.get(request_url, headers=headers)
         response.raise_for_status()
+        return response.json()["context"]["uri"]
 
     except requests.RequestException as e:
         handle_exception("Failed to get playback status:", e)
@@ -75,22 +76,20 @@ def speak(text):
 
 def create_database_entry(db, rfid, table, value):
     cursor = db.cursor()
-    if check_if_rfid_exists(db, rfid) is False:
-        if table == "commands":
-            cursor.execute(
-                "INSERT INTO commands (rfid, command) VALUES (?, ?)",
-                (rfid, value),
-            )
-        elif table == "music":
-            cursor.execute(
-                "INSERT INTO music (rfid, source, location) VALUES (?, ?, ?)",
-                (rfid, "spotify", value),
-            )
-        db.commit()
+    if table == "commands":
+        cursor.execute(
+            "INSERT INTO commands (rfid, command) VALUES (?, ?)",
+            (rfid, value),
+        )
+    elif table == "music":
+        cursor.execute(
+            "INSERT INTO music (rfid, source, location) VALUES (?, ?, ?)",
+            (rfid, "spotify", value),
+        )
+    db.commit()
 
 
 def register_spotify_rfid(db):
-    print("Registering RFID...")
     base_url = "https://api.spotify.com/v1"
     headers = {"Authorization": f"Bearer {spotify_auth()}"}
 
@@ -101,8 +100,10 @@ def register_spotify_rfid(db):
 
     rfid = get_rfid()
     uri = get_spotify_uri(base_url, headers)
-    create_database_entry(db, rfid, "music", uri)
-    speak("RFID successfully registered.")
+    if check_if_rfid_exists(db, rfid) is False:
+        create_database_entry(db, rfid, "music", uri)
+        print(f"RFID {rfid} successfully registered.")
+        speak("RFID successfully registered.")
 
 
 def register_commands(db):

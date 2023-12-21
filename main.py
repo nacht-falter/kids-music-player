@@ -249,12 +249,13 @@ def main():
 
             # Execute command or play music
             if command:
+                led.flash_led(23)
                 handle_register_rfid_command(command, player, db)
                 handle_other_commands(command, player)
 
             elif music_data:
-                play_sound("confirm")
                 led.flash_led(23)
+                play_sound("confirm")
                 if player:
                     player.pause_playback()
                     player.save_playback_state()
