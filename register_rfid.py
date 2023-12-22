@@ -66,11 +66,11 @@ def check_if_rfid_exists(db, rfid):
 
 def speak(text):
     print(text)
-    file = "sounds/speech/instructions.mp3"
+    file = "./sounds/speech/instructions.mp3"
     if os.path.exists(file):
         os.remove(file)
-    gtts.gTTS(text=text).save("sounds/speech/instructions.mp3")
-    playsound("sounds/speech/instructions.mp3")
+    gtts.gTTS(text=text).save("./sounds/speech/instructions.mp3")
+    playsound("./sounds/speech/instructions.mp3")
 
 
 def create_database_entry(db, rfid, table, value):
@@ -128,5 +128,5 @@ def register_commands(db):
 
 def handle_exception(message, e):
     print(f"{message}: {str(e)}")
-    playsound("sounds/error.wav")
+    playsound("./sounds/error.wav")
     exit(1)
