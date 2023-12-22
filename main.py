@@ -231,11 +231,11 @@ def main():
     )
     playback_status_thread.start()
 
+    play_sound("start")
+
     # Handle LED
     led.turn_off_led(14)
     led.turn_on_led(23)
-
-    play_sound("start")
 
     while True:
         # Wait for RFID input
