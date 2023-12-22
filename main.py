@@ -5,7 +5,7 @@ import time
 import threading
 from gpiozero import Button
 
-from spotify import SpotifyPlayer
+from spotify import SpotifyPlayer, get_spotify_auth_token
 from local import AudioPlayer
 import register_rfid
 import db_setup
@@ -38,10 +38,11 @@ def get_music_data(db, rfid):
         return None
 
 
-def create_player(music_data):
+def create_player(spotify_auth_token, music_data):
     """Create audio player instance"""
     if music_data["source"] == "spotify":
         player = SpotifyPlayer(
+            spotify_auth_token,
             music_data["rfid"],
             music_data["playback_state"],
             music_data["location"],
@@ -204,6 +205,9 @@ def main():
 
     db = sqlite3.connect(DATABASE_URL)
 
+    # get spotify auth token
+    spotify_auth_token = get_spotify_auth_token()
+
     # Check if command RFIDs are registered
     register_rfid.register_commands(db)
 
@@ -213,7 +217,7 @@ def main():
     last_played = get_last_played(db)
     if last_played:
         music_data = get_music_data(db, last_played)
-        player = create_player(music_data)
+        player = create_player(spotify_auth_token, music_data)
 
     # Handle LED
     led.turn_off_led(14)
@@ -262,7 +266,7 @@ def main():
                 if player:
                     player.pause_playback()
                     player.save_playback_state()
-                player = create_player(music_data)
+                player = create_player(spotify_auth_token, music_data)
                 player.play()
                 button_handler.player = player
 

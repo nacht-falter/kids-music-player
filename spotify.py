@@ -198,6 +198,3 @@ def get_spotify_auth_token():
     except requests.RequestException as e:
         print("Failed to get Spotify auth token:", e)
         return None
-
-
-auth_token = get_spotify_auth_token()
