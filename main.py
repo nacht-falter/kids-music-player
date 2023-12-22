@@ -124,9 +124,10 @@ def handle_other_commands(command, player):
 
 def shutdown(player):
     """Shutdown computer"""
-    play_sound("shutdown")
     if player:
+        player.pause_playback()
         player.save_playback_state()
+    play_sound("shutdown")
     led.turn_on_led(14)
     led.turn_off_led(23)
     if os.environ.get("DEVELOPMENT") == "False":
