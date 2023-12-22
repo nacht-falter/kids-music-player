@@ -126,8 +126,9 @@ def shutdown(player):
         player.save_playback_state()
     led.turn_on_led(14)
     led.turn_off_led(23)
-    print("\nShutting down...")
-    # os.system("systemctl poweroff")
+    if os.environ.get("DEVELOPMENT") == "False":
+        print("\nShutting down...")
+        os.system("sudo shutdown -h now")
 
 
 def check_playback_status(player):
