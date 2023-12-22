@@ -223,10 +223,6 @@ def main():
         music_data = get_music_data(db, last_played)
         player = create_player(spotify_auth_token, music_data)
 
-    # Handle LED
-    led.turn_off_led(14)
-    led.turn_on_led(23)
-
     # create button handler
     button_handler = ButtonHandler(player)
 
@@ -234,6 +230,10 @@ def main():
         target=check_playback_status, args=(player,)
     )
     playback_status_thread.start()
+
+    # Handle LED
+    led.turn_off_led(14)
+    led.turn_on_led(23)
 
     play_sound("start")
 

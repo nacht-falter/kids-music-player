@@ -19,9 +19,10 @@ class AudioPlayer:
     def check_playback_status(self):
         mpc_status = os.popen("mpc status").readlines()
         pattern = r"\[(\w+)\]"
-        match = re.search(pattern, mpc_status[1])
-        if match:
-            self.playing = match.group(1) == "playing"
+        if len(mpc_status) > 1:
+            match = re.search(pattern, mpc_status[1])
+            if match:
+                self.playing = match.group(1) == "playing"
 
     def play(self):
         os.system(f"mpc -q clear; mpc -q add {self.location}; mpc -q play")
