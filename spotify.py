@@ -15,7 +15,7 @@ class SpotifyPlayer:
         self.playback_state = (
             json.loads(playback_state)
             if playback_state
-            else {"offset": 0, "position_ms": 0}
+            else {"offset": {"position": 0}, "position_ms": 0}
         )
         self.location = location
         self.playing = False
@@ -49,7 +49,9 @@ class SpotifyPlayer:
         )
         data = {
             "context_uri": self.location,
-            "offset": self.playback_state.get("offset"),
+            "offset": {
+                "position": self.playback_state.get("offset").get("position")
+            },
             "position_ms": self.playback_state.get("position_ms"),
         }
 
@@ -122,13 +124,9 @@ class SpotifyPlayer:
         )
         data = {
             "context_uri": self.location,
-            "offset": 0,
+            "offset": {"position": 0},
             "position_ms": 0,
         }
-
-        print("Request URL:", request_url)
-        print("Headers:", self.headers)
-        print("Data:", json.dumps(data))
 
         try:
             response = requests.put(
@@ -147,7 +145,7 @@ class SpotifyPlayer:
             position_ms = playback_state.get("progress_ms")
             track_number = playback_state.get("item").get("track_number")
             self.playback_state = {
-                "offset": track_number - 1,
+                "offset": {"position": track_number - 1},
                 "position_ms": position_ms,
             }
             with sqlite3.connect(self.database_url) as db:
