@@ -126,6 +126,10 @@ class SpotifyPlayer:
             "position_ms": 0,
         }
 
+        print("Request URL:", request_url)
+        print("Headers:", self.headers)
+        print("Data:", json.dumps(data))
+
         try:
             response = requests.put(
                 request_url, headers=self.headers, json=data
