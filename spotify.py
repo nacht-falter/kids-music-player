@@ -6,9 +6,9 @@ from playsound import playsound
 
 
 class SpotifyPlayer:
-    def __init__(self, auth_token, rfid, playback_state, location):
+    def __init__(self, spotify_auth_token, rfid, playback_state, location):
         self.base_url = "https://api.spotify.com/v1"
-        self.headers = {"Authorization": f"Bearer {auth_token}"}
+        self.headers = {"Authorization": f"Bearer {spotify_auth_token}"}
         self.device_id = os.environ.get("DEVICE_ID")
         self.database_url = os.environ.get("DATABASE_URL")
         self.rfid = rfid
@@ -157,23 +157,6 @@ class SpotifyPlayer:
     def handle_exception(self, message, e):
         playsound("sounds/error.wav")
         print(f"{message}: {e})")
-
-
-class SpotifyPlayer:
-    def __init__(self, rfid, playback_state, location):
-        self.base_url = "https://api.spotify.com/v1"
-        self.headers = {"Authorization": f"Bearer {self.spotify_auth()}"}
-        self.device_id = os.environ.get("DEVICE_ID")
-        self.database_url = os.environ.get("DATABASE_URL")
-        self.rfid = rfid
-        self.playback_state = (
-            json.loads(playback_state)
-            if playback_state
-            else {"offset": 0, "position_ms": 0}
-        )
-        self.location = location
-        self.playing = False
-        print("Spotify player initialized.")
 
 
 def get_spotify_auth_token():

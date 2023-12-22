@@ -40,6 +40,7 @@ def get_music_data(db, rfid):
 
 def create_player(spotify_auth_token, music_data):
     """Create audio player instance"""
+    print(spotify_auth_token)
     if music_data["source"] == "spotify":
         player = SpotifyPlayer(
             spotify_auth_token,
