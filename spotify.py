@@ -6,9 +6,9 @@ from playsound import playsound
 
 
 class SpotifyPlayer:
-    def __init__(self, rfid, playback_state, location):
+    def __init__(self, auth_token, rfid, playback_state, location):
         self.base_url = "https://api.spotify.com/v1"
-        self.headers = {"Authorization": f"Bearer {self.spotify_auth()}"}
+        self.headers = {"Authorization": f"Bearer {auth_token}"}
         self.device_id = os.environ.get("DEVICE_ID")
         self.database_url = os.environ.get("DATABASE_URL")
         self.rfid = rfid
@@ -20,28 +20,6 @@ class SpotifyPlayer:
         self.location = location
         self.playing = False
         print("Spotify player initialized.")
-
-    def spotify_auth(self):
-        print("Getting Spotify auth token...")
-        usercreds = os.environ.get("USERCREDS")
-        refresh_token = os.environ.get("REFRESH_TOKEN")
-        token_url = "https://accounts.spotify.com/api/token"
-        token_data = {
-            "grant_type": "refresh_token",
-            "refresh_token": refresh_token,
-        }
-        token_headers = {
-            "Authorization": f"Basic {usercreds}",
-        }
-
-        try:
-            response = requests.post(
-                token_url, data=token_data, headers=token_headers
-            )
-            response.raise_for_status()
-            return response.json()["access_token"]
-        except requests.RequestException as e:
-            self.handle_exception("Failed to get Spotify auth token:", e)
 
     def check_playback_status(self):
         print("Checking spotify playback status...")
@@ -179,3 +157,47 @@ class SpotifyPlayer:
     def handle_exception(self, message, e):
         playsound("sounds/error.wav")
         print(f"{message}: {e})")
+
+
+class SpotifyPlayer:
+    def __init__(self, rfid, playback_state, location):
+        self.base_url = "https://api.spotify.com/v1"
+        self.headers = {"Authorization": f"Bearer {self.spotify_auth()}"}
+        self.device_id = os.environ.get("DEVICE_ID")
+        self.database_url = os.environ.get("DATABASE_URL")
+        self.rfid = rfid
+        self.playback_state = (
+            json.loads(playback_state)
+            if playback_state
+            else {"offset": 0, "position_ms": 0}
+        )
+        self.location = location
+        self.playing = False
+        print("Spotify player initialized.")
+
+
+def get_spotify_auth_token():
+    print("Getting Spotify auth token...")
+    usercreds = os.environ.get("USERCREDS")
+    refresh_token = os.environ.get("REFRESH_TOKEN")
+    token_url = "https://accounts.spotify.com/api/token"
+    token_data = {
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+    }
+    token_headers = {
+        "Authorization": f"Basic {usercreds}",
+    }
+
+    try:
+        response = requests.post(
+            token_url, data=token_data, headers=token_headers
+        )
+        response.raise_for_status()
+        return response.json()["access_token"]
+    except requests.RequestException as e:
+        print("Failed to get Spotify auth token:", e)
+        return None
+
+
+auth_token = get_spotify_auth_token()
