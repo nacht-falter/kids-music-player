@@ -59,6 +59,9 @@ def create_player(spotify_auth_token, music_data):
 
 def play_sound(event):
     """Play sound file associated with event"""
+
+    sound_folder = os.path.dirname(os.path.abspath(__file__)) + "/sounds/"
+
     sounds = {
         "start": "start",
         "confirm": "confirm",
@@ -69,7 +72,7 @@ def play_sound(event):
         "confirm_shutdown": "confirm_shutdown",
         "shutdown": "shutdown",
     }
-    playsound(f"./sounds/{sounds[event]}.wav")
+    playsound(f"{sound_folder}{sounds[event]}.wav")
 
 
 def save_last_played(db, rfid):

@@ -157,7 +157,8 @@ class SpotifyPlayer:
             print("No playback state to save.")
 
     def handle_exception(self, message, e):
-        playsound("sounds/error.wav")
+        sound_folder = os.path.dirname(os.path.abspath(__file__)) + "/sounds/"
+        playsound(f"{sound_folder}error.wav")
         print(f"{message}: {e})")
 
 
