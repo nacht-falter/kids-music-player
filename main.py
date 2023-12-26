@@ -91,6 +91,7 @@ def get_last_played(db):
     cursor.execute("SELECT last_played_rfid FROM last_played")
     result = cursor.fetchone()
     if result:
+        print("Last played album: " + result[0])
         return result[0]
     else:
         return None
@@ -124,10 +125,10 @@ def handle_other_commands(command, player):
 
 def shutdown(player):
     """Shutdown computer"""
+    play_sound("shutdown")
     if player:
         player.pause_playback()
         player.save_playback_state()
-    play_sound("shutdown")
     led.turn_on_led(14)
     led.turn_off_led(23)
     if os.environ.get("DEVELOPMENT") == "False":
@@ -235,8 +236,8 @@ def main():
     play_sound("start")
 
     # Handle LED
-    led.turn_off_led(14)
     led.turn_on_led(23)
+    led.turn_off_led(14)
 
     while True:
         # Wait for RFID input
