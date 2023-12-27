@@ -219,7 +219,8 @@ def main():
     if last_played:
         music_data = get_music_data(db, last_played)
         player = create_player(spotify_auth_token, music_data)
-        player.check_playback_state()
+        player.play()
+        player.pause_playback()
         button_handler.player = player
 
     play_sound("start")
