@@ -8,7 +8,12 @@ from playsound import playsound
 class SpotifyPlayer:
     def __init__(self, spotify_auth_token, rfid, playback_state, location):
         self.base_url = "https://api.spotify.com/v1"
-        self.headers = {"Authorization": f"Bearer {spotify_auth_token}"}
+        self.spotify_auth_token = (
+            spotify_auth_token
+            if spotify_auth_token
+            else get_spotify_auth_token()
+        )
+        self.headers = {"Authorization": f"Bearer {self.spotify_auth_token}"}
         self.device_id = os.environ.get("DEVICE_ID")
         self.database_url = os.environ.get("DATABASE_URL")
         self.rfid = rfid
