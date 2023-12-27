@@ -3,6 +3,7 @@ import os
 import json
 import sqlite3
 from playsound import playsound
+import logging
 
 
 class SpotifyPlayer:
@@ -164,6 +165,7 @@ class SpotifyPlayer:
     def handle_exception(self, message, e):
         sound_folder = os.path.dirname(os.path.abspath(__file__)) + "/sounds/"
         playsound(f"{sound_folder}error.wav")
+        logging.error(f"{message}: {e})")
         print(f"{message}: {e})")
 
 
@@ -189,3 +191,10 @@ def get_spotify_auth_token():
     except requests.RequestException as e:
         print("Failed to get Spotify auth token:", e)
         return None
+
+
+logging.basicConfig(
+    filename="musicplayer.log",
+    level=logging.DEBUG,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)

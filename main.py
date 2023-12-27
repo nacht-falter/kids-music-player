@@ -3,6 +3,7 @@ import os
 from playsound import playsound
 import threading
 from gpiozero import Button
+import logging
 
 from spotify import SpotifyPlayer, get_spotify_auth_token
 from local import AudioPlayer
@@ -120,6 +121,7 @@ def handle_other_commands(command, player):
             getattr(player, command)()
         else:
             play_sound("error")
+            logging.warning("No player instance")
 
 
 def shutdown(player):
@@ -178,6 +180,7 @@ class ButtonHandler:
                 self.player.toggle_playback()
             else:
                 play_sound("error")
+                logging.warning("No player instance")
 
         elif button == "next_track":
             if self.player:
@@ -185,6 +188,7 @@ class ButtonHandler:
                 self.player.next_track()
             else:
                 play_sound("error")
+                logging.warning("No player instance")
 
         elif button == "previous_track":
             if self.player:
@@ -192,9 +196,15 @@ class ButtonHandler:
                 self.player.previous_track()
             else:
                 play_sound("error")
+                logging.warning("No player instance")
 
 
 def main():
+    logging.basicConfig(
+        filename="musicplayer.log",
+        level=logging.DEBUG,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
     # Prepare database:
     DATABASE_URL = os.environ.get("DATABASE_URL")
 
@@ -271,6 +281,7 @@ def main():
             else:
                 print("Unknown RFID")
                 play_sound("error")
+                logging.warning("Unknown RFID: " + rfid)
 
 
 if __name__ == "__main__":
