@@ -1,8 +1,6 @@
 import sqlite3
 import os
 from playsound import playsound
-
-# import time
 import threading
 from gpiozero import Button
 
@@ -137,13 +135,6 @@ def shutdown(player):
         os.system("sudo shutdown -h now")
 
 
-# def check_playback_status(player):
-#     while True:
-#         if player:
-#             player.check_playback_status()
-#             time.sleep(10)
-
-
 class ButtonHandler:
     def __init__(self, player):
         self.player = player
@@ -228,12 +219,8 @@ def main():
     if last_played:
         music_data = get_music_data(db, last_played)
         player = create_player(spotify_auth_token, music_data)
+        player.check_playback_state()
         button_handler.player = player
-
-    # playback_status_thread = threading.Thread(
-    #     target=check_playback_status, args=(player,)
-    # )
-    # playback_status_thread.start()
 
     play_sound("start")
 
