@@ -136,11 +136,11 @@ def shutdown(player):
         os.system("sudo shutdown -h now")
 
 
-def check_playback_status(player):
-    while True:
-        if player:
-            player.check_playback_status()
-            time.sleep(10)
+# def check_playback_status(player):
+#     while True:
+#         if player:
+#             player.check_playback_status()
+#             time.sleep(10)
 
 
 class ButtonHandler:
@@ -223,15 +223,16 @@ def main():
     last_played = get_last_played(db)
     if last_played:
         music_data = get_music_data(db, last_played)
+        print("music_data: " + str(music_data))
         player = create_player(spotify_auth_token, music_data)
 
     # create button handler
     button_handler = ButtonHandler(player)
 
-    playback_status_thread = threading.Thread(
-        target=check_playback_status, args=(player,)
-    )
-    playback_status_thread.start()
+    # playback_status_thread = threading.Thread(
+    #     target=check_playback_status, args=(player,)
+    # )
+    # playback_status_thread.start()
 
     play_sound("start")
 
@@ -267,8 +268,8 @@ def main():
                 handle_other_commands(command, player)
 
             elif music_data:
-                led.flash_led(23)
                 play_sound("confirm")
+                led.flash_led(23)
                 if player:
                     player.pause_playback()
                     player.save_playback_state()
