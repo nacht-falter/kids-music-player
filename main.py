@@ -1,7 +1,8 @@
 import sqlite3
 import os
 from playsound import playsound
-import time
+
+# import time
 import threading
 from gpiozero import Button
 
@@ -219,15 +220,15 @@ def main():
 
     player = None
 
+    # create button handler
+    button_handler = ButtonHandler(player)
+
     # Get last played album and load player
     last_played = get_last_played(db)
     if last_played:
         music_data = get_music_data(db, last_played)
-        print("music_data: " + str(music_data))
         player = create_player(spotify_auth_token, music_data)
-
-    # create button handler
-    button_handler = ButtonHandler(player)
+        button_handler.player = player
 
     # playback_status_thread = threading.Thread(
     #     target=check_playback_status, args=(player,)
