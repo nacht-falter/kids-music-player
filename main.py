@@ -178,7 +178,10 @@ class ButtonHandler:
         elif button == "toggle_playback":
             if self.player:
                 play_sound(button)
-                self.player.toggle_playback()
+                if self.player.playing:
+                    self.player.pause_playback()
+                else:
+                    self.player.play()
             else:
                 play_sound("error")
                 logging.warning("No player instance")
@@ -230,8 +233,6 @@ def main():
             player = create_player(spotify_auth_token, music_data)
             while not player.check_device_status():
                 time.sleep(1)
-            player.play()
-            player.pause_playback()
         else:
             player = create_player(None, music_data)
         button_handler.player = player
