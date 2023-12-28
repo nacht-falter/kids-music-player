@@ -3,6 +3,7 @@ import os
 import json
 import sqlite3
 from playsound import playsound
+import time
 import logging
 
 
@@ -26,6 +27,31 @@ class SpotifyPlayer:
         self.location = location
         self.playing = False
         print("Spotify player initialized.")
+
+    def check_device_status(self):
+        print("Checking Spotify device status...")
+        request_url = self.base_url + "/me/player/devices"
+
+        max_attempts = 3
+        attempts = 0
+
+        while attempts < max_attempts:
+            try:
+                response = requests.get(request_url, headers=self.headers)
+                response.raise_for_status()
+                devices = response.json().get("devices")
+                for device in devices:
+                    if device.get("id") == self.device_id:
+                        return True
+                return False
+            except requests.RequestException as e:
+                self.handle_exception("Failed to get device status:", e)
+                attempts += 1
+                print(f"Retrying... Attempt {attempts} of {max_attempts}")
+                time.sleep(2)
+
+        print("Spotify device not available.")
+        return False
 
     def check_playback_status(self):
         print("Checking spotify playback status...")

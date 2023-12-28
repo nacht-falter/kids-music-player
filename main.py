@@ -4,6 +4,7 @@ from playsound import playsound
 import threading
 from gpiozero import Button
 import logging
+import time
 
 from spotify import SpotifyPlayer, get_spotify_auth_token
 from local import AudioPlayer
@@ -213,21 +214,21 @@ def main():
 
     db = sqlite3.connect(DATABASE_URL)
 
-    # get spotify auth token
-    spotify_auth_token = get_spotify_auth_token()
-
     # Check if command RFIDs are registered
     register_rfid.register_commands(db)
 
     player = None
-
-    # create button handler
+    spotify_auth_token = None
     button_handler = ButtonHandler(player)
 
     # Get last played album and load player
     last_played = get_last_played(db)
     if last_played:
         music_data = get_music_data(db, last_played)
+        if music_data["source"] == "spotify":
+            spotify_auth_token = get_spotify_auth_token()
+            while not player.check_device_status():
+                time.sleep(1)
         player = create_player(spotify_auth_token, music_data)
         player.play()
         player.pause_playback()
@@ -235,7 +236,6 @@ def main():
 
     play_sound("start")
 
-    # Handle LED
     led.turn_on_led(23)
     led.turn_off_led(14)
 
