@@ -227,11 +227,13 @@ def main():
         music_data = get_music_data(db, last_played)
         if music_data["source"] == "spotify":
             spotify_auth_token = get_spotify_auth_token()
+            player = create_player(spotify_auth_token, music_data)
             while not player.check_device_status():
                 time.sleep(1)
-        player = create_player(spotify_auth_token, music_data)
-        player.play()
-        player.pause_playback()
+            player.play()
+            player.pause_playback()
+        else:
+            player = create_player(None, music_data)
         button_handler.player = player
 
     play_sound("start")
