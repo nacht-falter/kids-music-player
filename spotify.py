@@ -3,8 +3,6 @@ import os
 import json
 import sqlite3
 from playsound import playsound
-import time
-import logging
 
 
 class SpotifyPlayer:
@@ -32,26 +30,17 @@ class SpotifyPlayer:
         print("Checking Spotify device status...")
         request_url = self.base_url + "/me/player/devices"
 
-        max_attempts = 3
-        attempts = 0
-
-        while attempts < max_attempts:
-            try:
-                response = requests.get(request_url, headers=self.headers)
-                response.raise_for_status()
-                devices = response.json().get("devices")
+        try:
+            response = requests.get(request_url, headers=self.headers)
+            response.raise_for_status()
+            devices = response.json().get("devices")
+            if devices:
                 for device in devices:
                     if device.get("id") == self.device_id:
                         return True
-                return False
-            except requests.RequestException as e:
-                self.handle_exception("Failed to get device status:", e)
-                attempts += 1
-                print(f"Retrying... Attempt {attempts} of {max_attempts}")
-                time.sleep(2)
-
-        print("Spotify device not available.")
-        return False
+        except requests.RequestException as e:
+            self.handle_exception("Failed to get device status:", e)
+            return False
 
     def check_playback_status(self):
         print("Checking spotify playback status...")
@@ -191,7 +180,6 @@ class SpotifyPlayer:
     def handle_exception(self, message, e):
         sound_folder = os.path.dirname(os.path.abspath(__file__)) + "/sounds/"
         playsound(f"{sound_folder}error.wav")
-        logging.error(f"{message}: {e})")
         print(f"{message}: {e})")
 
 
@@ -217,10 +205,3 @@ def get_spotify_auth_token():
     except requests.RequestException as e:
         print("Failed to get Spotify auth token:", e)
         return None
-
-
-logging.basicConfig(
-    filename="musicplayer.log",
-    level=logging.DEBUG,
-    format="%(asctime)s %(levelname)s %(name)s %(message)s",
-)
