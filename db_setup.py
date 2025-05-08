@@ -8,10 +8,6 @@ def create_tables(db):
     logging.info("Creating database tables...")
     cursor = db.cursor()
     cursor.execute(
-        "CREATE TABLE IF NOT EXISTS commands(rfid TEXT PRIMARY KEY, "
-        "command TEXT NOT NULL);"
-    )
-    cursor.execute(
         "CREATE TABLE IF NOT EXISTS music(rfid TEXT PRIMARY KEY, "
         "source TEXT NOT NULL, playback_state TEXT, location TEXT NOT NULL);"
     )

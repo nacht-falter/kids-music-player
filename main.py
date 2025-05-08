@@ -23,6 +23,7 @@ except ImportError:
     led = None
 
 import register_rfid
+
 from spotify import get_spotify_auth_token
 
 if os.getenv("DEBUG") == "true":
@@ -192,9 +193,6 @@ def main():
 
     db = sqlite3.connect(DATABASE_URL)
 
-    # Check if command RFIDs are registered
-    register_rfid.register_commands(db)
-
     if Button:
         button_handler = ButtonHandler(None)
 
@@ -256,18 +254,9 @@ def main():
                 utils.handle_already_playing(player)
 
             else:
-                # Get command and music data from database
-                command = utils.get_command(db, rfid)
                 music_data = utils.get_music_data(db, rfid)
 
-                # Execute command or play music
-                if command:
-                    if led:
-                        led.flash_led(23)
-                    utils.handle_register_rfid_command(command, player, db)
-                    utils.handle_other_commands(command, player)
-
-                elif music_data:
+                if music_data:
                     utils.play_sound("confirm")
                     if led:
                         led.flash_led(23)

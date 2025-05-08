@@ -12,22 +12,9 @@ except ImportError:
     led = None
 
 import register_rfid
+
 from local import AudioPlayer
 from spotify import SpotifyPlayer
-
-
-def get_command(db, rfid):
-    """Get command to execute from database"""
-    cursor = db.cursor()
-    cursor.execute("SELECT * FROM commands where rfid = ?", (rfid,))
-    command = cursor.fetchone()
-
-    if command:
-        logging.debug("Found command for RFID %s: %s", rfid, command[1])
-        return command[1]
-    else:
-        logging.debug("No command found for RFID %s", rfid)
-        return None
 
 
 def get_music_data(db, rfid):
@@ -122,27 +109,6 @@ def handle_already_playing(player):
     else:
         logging.info("Playback is paused. Toggling playback.")
         player.toggle_playback()
-
-
-def handle_register_rfid_command(command, player, db):
-    """Handle register RFID command"""
-    if command == "register_rfid":
-        if player:
-            player.pause_playback()
-        register_rfid.register_spotify_rfid(db)
-
-
-def handle_other_commands(command, player):
-    """Handle all other commands"""
-    if command != "register_rfid":
-        if player:
-            logging.info("Executing command '%s'", command)
-            play_sound(command)
-            getattr(player, command)()
-        else:
-            logging.warning(
-                "Player is not initialized. Cannot execute command.")
-            play_sound("error")
 
 
 def shutdown(player):
