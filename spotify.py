@@ -6,7 +6,9 @@ import time
 
 import requests
 
-from register_rfid import speak
+import utils
+
+
 class SpotifyPlayer:
     def __init__(self, spotify_auth_token, rfid, playback_state, location, database_url):
         self.base_url = "https://api.spotify.com/v1"
@@ -73,7 +75,7 @@ class SpotifyPlayer:
             logging.info("Playback started on device %s", self.device_id)
         except requests.RequestException as e:
             self.handle_exception("Playback failed", e)
-            speak("I can't play this right now, sorry.")
+            utils.speak("I can't play this right now, sorry.")
 
     def pause_playback(self):
         if not self.playing:

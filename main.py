@@ -22,8 +22,6 @@ try:
 except ImportError:
     led = None
 
-import register_rfid
-
 from spotify import get_spotify_auth_token
 
 if os.getenv("DEBUG") == "true":

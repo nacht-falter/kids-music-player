@@ -11,7 +11,6 @@ try:
 except ImportError:
     led = None
 
-import register_rfid
 
 from local import AudioPlayer
 from spotify import SpotifyPlayer
