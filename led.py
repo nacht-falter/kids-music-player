@@ -21,7 +21,7 @@ def turn_off_led(gpio_pin):
 
 
 def flash_led(gpio_pin):
-    for i in range(0, 2):
+    for _ in range(0, 2):
         toggle_led(gpio_pin)
         time.sleep(0.1)
         toggle_led(gpio_pin)
