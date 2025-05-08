@@ -1,10 +1,11 @@
-import sqlite3
+import logging
 import os
+import sqlite3
 
 
 def create_tables(db):
     """Create database tables"""
-    print("Creating tables...")
+    logging.info("Creating database tables...")
     cursor = db.cursor()
     cursor.execute(
         "CREATE TABLE IF NOT EXISTS commands(rfid TEXT PRIMARY KEY, "
@@ -25,9 +26,9 @@ def create_tables(db):
 def create_db(database_url):
     """Create database"""
     if not os.path.exists(database_url):
-        print("Creating database...")
+        logging.info("Creating database...")
         db = sqlite3.connect(database_url)
         create_tables(db)
         db.close()
     else:
-        print("Database exists. Skipping...")
+        logging.warning("Database exists. Skipping...")

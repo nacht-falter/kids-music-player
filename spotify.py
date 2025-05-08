@@ -1,21 +1,19 @@
-import requests
-import os
 import json
+import logging
+import os
 import sqlite3
-from playsound import playsound
+import time
 
+import requests
 
+from register_rfid import speak
 class SpotifyPlayer:
-    def __init__(self, spotify_auth_token, rfid, playback_state, location):
+    def __init__(self, spotify_auth_token, rfid, playback_state, location, database_url):
         self.base_url = "https://api.spotify.com/v1"
-        self.spotify_auth_token = (
-            spotify_auth_token
-            if spotify_auth_token
-            else get_spotify_auth_token()
-        )
+        self.spotify_auth_token = spotify_auth_token or get_spotify_auth_token()
         self.headers = {"Authorization": f"Bearer {self.spotify_auth_token}"}
         self.device_id = os.environ.get("DEVICE_ID")
-        self.database_url = os.environ.get("DATABASE_URL")
+        self.database_url = database_url
         self.rfid = rfid
         self.playback_state = (
             json.loads(playback_state)
@@ -24,167 +22,146 @@ class SpotifyPlayer:
         )
         self.location = location
         self.playing = False
-        print("Spotify player initialized.")
+        self.active_device = None
+        self.playback_started = False
+        logging.info("SpotifyPlayer initialized for RFID %s", rfid)
 
     def check_device_status(self):
-        print("Checking Spotify device status...")
-        request_url = self.base_url + "/me/player/devices"
-
         try:
-            response = requests.get(request_url, headers=self.headers)
+            response = requests.get(
+                f"{self.base_url}/me/player/devices", headers=self.headers)
             response.raise_for_status()
-            devices = response.json().get("devices")
-            if devices:
-                for device in devices:
-                    if device.get("id") == self.device_id:
-                        return True
+            for device in response.json().get("devices", []):
+                if device.get("id") == self.device_id:
+                    return True
         except requests.RequestException as e:
-            self.handle_exception("Failed to get device status:", e)
-            return False
+            self.handle_exception("Device status check failed", e)
+        return False
 
     def check_playback_status(self):
-        print("Checking spotify playback status...")
-        request_url = self.base_url + "/me/player"
-
         try:
-            response = requests.get(request_url, headers=self.headers)
-
+            response = requests.get(
+                f"{self.base_url}/me/player", headers=self.headers)
             if response.status_code == 204:
-                print("No content currently playing.")
+                self.active_device = None
                 return None
-
             response.raise_for_status()
-
-            if response.json().get("device").get("id") == self.device_id:
-                self.playing = response.json().get("is_playing")
-            return response.json()
-
+            playback = response.json()
+            device_id = playback.get("device", {}).get("id")
+            self.active_device = device_id
+            self.playing = (device_id == self.device_id) and playback.get(
+                "is_playing")
+            return playback
         except requests.RequestException as e:
-            self.handle_exception("Failed to get playback status:", e)
+            self.handle_exception("Playback status check failed", e)
             return None
 
     def play(self, toggle=False):
-        print("Playing...")
-        request_url = (
-            self.base_url + "/me/player/play?device_id=" + self.device_id
-        )
+        url = f"{self.base_url}/me/player/play?device_id={self.device_id}"
         data = {
             "context_uri": self.location,
-            "offset": {
-                "position": self.playback_state.get("offset").get("position")
-            },
-            "position_ms": self.playback_state.get("position_ms"),
+            "offset": {"position": self.playback_state["offset"]["position"]},
+            "position_ms": self.playback_state["position_ms"],
         }
-
         try:
-            if toggle:  # make request without data
-                response = requests.put(request_url, headers=self.headers)
-            else:
-                response = requests.put(
-                    request_url, headers=self.headers, json=data
-                )
+            response = requests.put(
+                url, headers=self.headers, json=None if toggle else data)
             response.raise_for_status()
             self.playing = True
-
+            self.playback_started = True
+            self.active_device = self.device_id
+            logging.info("Playback started on device %s", self.device_id)
         except requests.RequestException as e:
-            self.handle_exception("Failed to play:", e)
+            self.handle_exception("Playback failed", e)
+            speak("I can't play this right now, sorry.")
 
     def pause_playback(self):
-        print("Pausing playback...")
-        request_url = (
-            self.base_url + "/me/player/pause?device_id=" + self.device_id
-        )
-
-        if self.playing:
-            try:
-                response = requests.put(request_url, headers=self.headers)
-                response.raise_for_status()
-                self.playing = False
-
-            except requests.RequestException as e:
-                self.handle_exception("Failed to pause playback:", e)
+        if not self.playing:
+            return
+        url = f"{self.base_url}/me/player/pause?device_id={self.device_id}"
+        try:
+            response = requests.put(url, headers=self.headers)
+            response.raise_for_status()
+            self.playing = False
+            self.active_device = None
+            logging.info("Playback paused")
+        except requests.RequestException as e:
+            self.handle_exception("Pause failed", e)
 
     def toggle_playback(self):
-        print("Toggling playback...")
         if self.playing:
             self.pause_playback()
         else:
             self.play(toggle=True)
 
     def next_track(self):
-        print("Next track...")
-        request_url = (
-            self.base_url + "/me/player/next?device_id=" + self.device_id
-        )
-
+        if self.active_device != self.device_id:
+            logging.warning(
+                "Can't skip track: playback controlled by another device.")
+            return
+        url = f"{self.base_url}/me/player/next?device_id={self.device_id}"
         try:
-            response = requests.post(request_url, headers=self.headers)
+            response = requests.post(url, headers=self.headers)
             response.raise_for_status()
             self.playing = True
+            logging.info("Skipped to next track")
         except requests.RequestException as e:
-            self.handle_exception("Next track failed:", e)
+            self.handle_exception("Next track failed", e)
 
     def previous_track(self):
-        print("Previous track...")
-        request_url = (
-            self.base_url + "/me/player/previous?device_id=" + self.device_id
-        )
-
+        if self.active_device != self.device_id:
+            logging.warning(
+                "Can't go to previous track: playback controlled by another device.")
+            return
+        url = f"{self.base_url}/me/player/previous?device_id={self.device_id}"
         try:
-            response = requests.post(request_url, headers=self.headers)
+            response = requests.post(url, headers=self.headers)
             response.raise_for_status()
             self.playing = True
-
+            logging.info("Returned to previous track")
         except requests.RequestException as e:
-            self.handle_exception("Previous track failed:", e)
+            self.handle_exception("Previous track failed", e)
 
     def restart_playback(self):
-        print("Restart playback...")
-        request_url = (
-            self.base_url + "/me/player/play?device_id=" + self.device_id
-        )
-        data = {
-            "context_uri": self.location,
-            "offset": {"position": 0},
-            "position_ms": 0,
-        }
-
+        url = f"{self.base_url}/me/player/play?device_id={self.device_id}"
+        data = {"context_uri": self.location,
+                "offset": {"position": 0}, "position_ms": 0}
         try:
-            response = requests.put(
-                request_url, headers=self.headers, json=data
-            )
+            response = requests.put(url, headers=self.headers, json=data)
             response.raise_for_status()
             self.playing = True
-
+            logging.info("Playback restarted from beginning")
         except requests.RequestException as e:
-            self.handle_exception("Restart playback failed:", e)
+            self.handle_exception("Restart failed", e)
 
     def save_playback_state(self):
-        print("Saving playback state...")
-        playback_state = self.check_playback_status()
-        if playback_state:
-            position_ms = playback_state.get("progress_ms")
-            track_number = playback_state.get("item").get("track_number")
+        playback = self.check_playback_status()
+        if playback:
+            position_ms = playback.get("progress_ms", 0)
+            track_number = playback.get("item", {}).get("track_number", 1)
             self.playback_state = {
                 "offset": {"position": track_number - 1},
                 "position_ms": position_ms,
             }
-            with sqlite3.connect(self.database_url) as db:
-                db.cursor().execute(
-                    "UPDATE music SET playback_state = ? WHERE rfid = ?",
-                    (json.dumps(self.playback_state), self.rfid),
-                )
+            try:
+                with sqlite3.connect(self.database_url) as db:
+                    db.cursor().execute(
+                        "UPDATE music SET playback_state = ? WHERE rfid = ?",
+                        (json.dumps(self.playback_state), self.rfid),
+                    )
+                logging.info("Playback state saved for RFID %s", self.rfid)
+            except sqlite3.DatabaseError as e:
+                self.handle_exception("Saving playback state failed", e)
         else:
-            print("No playback state to save.")
+            logging.debug("No playback data available to save")
 
     def handle_exception(self, message, e):
-        sound_folder = os.path.dirname(os.path.abspath(__file__)) + "/sounds/"
-        playsound(f"{sound_folder}error.wav")
-        print(f"{message}: {e})")
+        logging.error("%s: %s", message, e, exc_info=True)
 
 
 def get_spotify_auth_token():
-    print("Getting Spotify auth token...")
+    """Request and return Spotify auth token, with retry logic and error handling."""
+    logging.debug("Requesting Spotify auth token...")
     usercreds = os.environ.get("USERCREDS")
     refresh_token = os.environ.get("REFRESH_TOKEN")
     token_url = "https://accounts.spotify.com/api/token"
@@ -196,12 +173,24 @@ def get_spotify_auth_token():
         "Authorization": f"Basic {usercreds}",
     }
 
-    try:
-        response = requests.post(
-            token_url, data=token_data, headers=token_headers
-        )
-        response.raise_for_status()
-        return response.json()["access_token"]
-    except requests.RequestException as e:
-        print("Failed to get Spotify auth token:", e)
-        return None
+    retries = 3
+    delay = 3
+
+    for attempt in range(retries):
+        try:
+            response = requests.post(
+                token_url, data=token_data, headers=token_headers)
+            response.raise_for_status()
+            logging.info("Successfully retrieved Spotify auth token.")
+            return response.json()["access_token"]
+
+        except requests.RequestException as e:
+            logging.error("Auth token request failed (Attempt %d/%d): %s",
+                          attempt + 1, retries, e, exc_info=True)
+            if attempt < retries - 1:
+                logging.info("Retrying in %d seconds...", delay)
+                time.sleep(delay)
+            else:
+                logging.error(
+                    "Exceeded maximum retries for Spotify auth token request.")
+                return None

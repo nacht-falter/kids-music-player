@@ -1,12 +1,14 @@
+import logging
 import os
 import sqlite3
+
 import env
 
 
 def get_rfid(db):
     rfid = input("Scan RFID: ")
     if check_if_rfid_exists(db, rfid):
-        print("RFID already exists. Please try a different one.")
+        logging.warning("RFID %s already exists. Please try a different one.", rfid)
         get_rfid(db)
     return rfid
 
@@ -39,7 +41,7 @@ def register_local_rfid(db):
     rfid = get_rfid(db)
     location = input("Enter the path to the album: ")
     create_database_entry(db, rfid, "music", location)
-    print("RFID registered.")
+    logging.info("RFID %s registered.", rfid)
     return rfid
 
 

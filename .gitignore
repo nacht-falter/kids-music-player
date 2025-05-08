@@ -4,3 +4,4 @@ env.py
 *.db
 /sounds/speech/instructions*
 /.config
+*.log

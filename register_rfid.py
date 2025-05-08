@@ -1,6 +1,9 @@
+import logging
 import os
+import sys
+
 import gtts
-from playsound import playsound
+import pygame
 import requests
 
 
@@ -22,7 +25,7 @@ def spotify_auth():
         )
         token_response_data = response.json()
         response.raise_for_status()
-        print("Token refreshed")
+        logging.info("Spotify auth token refreshed")
         return token_response_data["access_token"]
 
     except requests.RequestException as e:
@@ -64,16 +67,6 @@ def check_if_rfid_exists(db, rfid):
         return False
 
 
-def speak(text):
-    print(text)
-    sound_folder = os.path.dirname(os.path.abspath(__file__)) + "/sounds/"
-    file = "./sounds/speech/instructions.mp3"
-    if os.path.exists(file):
-        os.remove(file)
-    gtts.gTTS(text=text).save(f"{sound_folder}speech/instructions.mp3")
-    playsound(f"{sound_folder}speech/instructions.mp3")
-
-
 def create_database_entry(db, rfid, table, value):
     cursor = db.cursor()
     if table == "commands":
@@ -102,12 +95,12 @@ def register_spotify_rfid(db):
     uri = get_spotify_uri(base_url, headers)
     if check_if_rfid_exists(db, rfid) is False:
         create_database_entry(db, rfid, "music", uri)
-        print(f"RFID {rfid} successfully registered.")
+        logging.info("RFID %s successfully registered.", rfid)
         speak("RFID successfully registered.")
 
 
 def register_commands(db):
-    print("Registering commands...")
+    logging.info("Registering commands...")
     if not db.cursor().execute("SELECT * FROM commands").fetchall():
         commands = {}
         speak("Please scan your RFID for toggling playback")
@@ -128,7 +121,30 @@ def register_commands(db):
 
 
 def handle_exception(message, e):
-    sound_folder = os.path.dirname(os.path.abspath(__file__)) + "/sounds/"
-    print(f"{message}: {str(e)}")
-    playsound(f"{sound_folder}error.wav")
-    exit(1)
+    from main import play_sound
+    play_sound("error")
+    logging.error("%s: %s", message, e, exc_info=True)
+
+    sys.exit(1)
+
+
+def speak(text):
+    logging.info("Speaking: %s", text)
+
+    sound_folder = os.path.join(os.path.dirname(
+        os.path.abspath(__file__)), "sounds", "speech")
+    os.makedirs(sound_folder, exist_ok=True)  # Ensure directory exists
+    file_path = os.path.join(sound_folder, "instructions.mp3")
+    if os.path.exists(file_path):
+        os.remove(file_path)
+
+    tts = gtts.gTTS(text=text)
+    tts.save(file_path)
+
+    pygame.mixer.init()
+    pygame.mixer.music.load(file_path)
+    pygame.mixer.music.play()
+
+    # Wait until playback finishes
+    while pygame.mixer.music.get_busy():
+        pygame.time.Clock().tick(10)
