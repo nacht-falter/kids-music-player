@@ -68,7 +68,6 @@ def play_sound(event):
         "confirm_shutdown": "confirm_shutdown",
         "shutdown": "shutdown",
     }
-    pygame.mixer.init()
     pygame.mixer.music.load(f"{sound_folder}{sounds[event]}.wav")
     pygame.mixer.music.play()
 

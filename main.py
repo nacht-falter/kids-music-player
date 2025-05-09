@@ -38,6 +38,9 @@ logging.basicConfig(
     ]
 )
 
+# Initialize pygame mixer for playing system sounds
+pygame.mixer.init()
+
 player_lock = threading.Lock()
 last_activity = time.time()
 activity_lock = threading.Lock()
