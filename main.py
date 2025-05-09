@@ -4,25 +4,23 @@ import sqlite3
 import threading
 import time
 
+import pygame
 import requests
 
+import db_setup
 import env as _
 import utils
+from spotify import get_spotify_auth_token
 
 try:
     from gpiozero import Button
 except ImportError:
     Button = None
 
-
-import db_setup
-
 try:
     import led
 except ImportError:
     led = None
-
-from spotify import get_spotify_auth_token
 
 if os.getenv("DEBUG") == "true":
     level = logging.DEBUG
