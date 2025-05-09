@@ -37,7 +37,8 @@ logging.basicConfig(
 )
 
 # Initialize pygame mixer for playing system sounds
-pygame.mixer.init()
+pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=2048)
+
 
 player_lock = threading.Lock()
 last_activity = time.time()

@@ -1,5 +1,6 @@
 import logging
 import os
+import time
 
 import gtts
 import pygame
@@ -72,7 +73,7 @@ def play_sound(event):
     pygame.mixer.music.play()
 
     while pygame.mixer.music.get_busy():
-        pygame.time.Clock().tick(10)
+        time.sleep(0.01)
 
 
 def save_last_played(db, rfid):
