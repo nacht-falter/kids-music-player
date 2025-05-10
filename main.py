@@ -41,14 +41,15 @@ pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=2048)
 
 
 player_lock = threading.Lock()
-last_activity = time.time()
+last_activity = time.monotonic()
 activity_lock = threading.Lock()
+IDLE_TIME = os.environ.get("IDLE_TIME") 
 
 
 def reset_last_activity():
     global last_activity
     with activity_lock:
-        last_activity = time.time()
+        last_activity = time.monotonic()
         logging.debug("Last activity reset at %.0f", last_activity)
 
 
@@ -220,8 +221,8 @@ def main():
     def watchdog_loop():
         while True:
             with activity_lock:
-                inactive_for = time.time() - last_activity
-            if inactive_for > 3600:
+                inactive_for = time.monotonic() - last_activity
+            if inactive_for > (int(IDLE_TIME) if IDLE_TIME else 3600):
                 logging.info(
                     "Watchdog: system has been idle for %.0f seconds", inactive_for)
                 utils.shutdown(player)
