@@ -32,26 +32,37 @@ def get_music_data(db, rfid):
         return None
 
 
+def wait_for_spotify_device(player, retries=10, delay=0.5):
+    """Wait for the Spotify device to become available."""
+    for _ in range(retries):
+        if player.check_device_status():
+            return True
+        time.sleep(delay)
+    return False
+
+
 def create_player(spotify_auth_token, music_data, database_url):
     """Create audio player instance"""
     logging.info("Creating player for RFID %s", music_data["rfid"])
+
     if music_data["source"] == "spotify":
-        player = SpotifyPlayer(
+        return SpotifyPlayer(
             spotify_auth_token,
             music_data["rfid"],
             music_data["playback_state"],
             music_data["location"],
             database_url
         )
-    else:
-        player = AudioPlayer(
+    elif music_data["source"] == "local":
+        return AudioPlayer(
             music_data["rfid"],
             music_data["playback_state"],
             music_data["location"],
             database_url
         )
-
-    return player
+    else:
+        logging.warning("Unknown music source: %s", music_data["source"])
+        return None
 
 
 def play_sound(event):

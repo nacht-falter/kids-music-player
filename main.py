@@ -152,27 +152,19 @@ def initialize_last_played(db, spotify_auth_token, database_url):
     if not music_data:
         return None
 
-    player = None
+    with player_lock:
+        player = utils.create_player(
+            spotify_auth_token, music_data, database_url)
 
-    if music_data["source"] == "spotify":
-        if spotify_auth_token:
-            with player_lock:
-                temp_player = utils.create_player(
-                    spotify_auth_token, music_data, database_url)
-                for _ in range(10):
-                    if temp_player.check_device_status():
-                        player = temp_player
-                        break
-                    time.sleep(0.5)
-                else:
-                    logging.warning(
-                        "Spotify device not responding; skipping.")
-        else:
-            logging.warning(
-                "Skipped Spotify player setup due to missing token.")
-    else:
-        with player_lock:
-            player = utils.create_player(None, music_data, database_url)
+        if music_data["source"] == "spotify":
+            if not spotify_auth_token:
+                logging.warning(
+                    "Skipped Spotify player setup due to missing token.")
+                return None
+
+            if not utils.wait_for_spotify_device(player):
+                logging.warning("Spotify device not responding; skipping.")
+                return None
 
     return player
 
