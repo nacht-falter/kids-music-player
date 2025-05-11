@@ -50,14 +50,15 @@ def list_registered_rfids():
     """Displays all registered RFIDs and their associated URIs or album paths."""
     db = get_db()
     cursor = db.cursor()
-    cursor.execute("SELECT rfid, source, location FROM music")
+    cursor.execute("SELECT rfid, source, location, title FROM music")
     rows = cursor.fetchall()
 
     if not rows:
         print("No RFID records found.")
     else:
         for row in rows:
-            print(f"RFID: {row[0]} -> Source: {row[1]}, Location: {row[2]}")
+            print(
+                f"RFID: {row[0]} -> Source: {row[1]}, Location: {row[2]}, Title: {row[3]}")
     db.close()
 
 
