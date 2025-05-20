@@ -1,6 +1,7 @@
 import logging
 import os
 import subprocess
+import time
 
 import env as _
 
@@ -29,32 +30,40 @@ def get_music_data(db, rfid):
         return None
 
 
-def create_player(music_data, db):
+def create_player(music_data, db, retries=5, delay=1):
     """Create audio player instance"""
-    logging.info("Creating player for RFID %s", music_data["rfid"])
+    rfid = music_data["rfid"]
+    source = music_data.get("source")
+    playback_state = music_data.get("playback_state")
+    location = music_data.get("location")
 
-    if music_data["source"] == "spotify":
-        return SpotifyPlayer(
-            music_data["rfid"],
-            music_data["playback_state"],
-            music_data["location"],
-            db
-        )
-    elif music_data["source"] == "local":
-        return AudioPlayer(
-            music_data["rfid"],
-            music_data["playback_state"],
-            music_data["location"],
-            db
-        )
+    logging.info("Creating player for RFID %s", rfid)
+
+    if source == "spotify":
+        for attempt in range(retries):
+            player = SpotifyPlayer(rfid, playback_state, location, db)
+            if player.is_ready():
+                logging.info(
+                    "Spotify player ready after %d attempt(s)", attempt + 1)
+                return player
+            logging.warning("Spotify player not ready (attempt %d/%d), retrying in %d seconds...",
+                            attempt + 1, retries, delay)
+            time.sleep(delay)
+
+        logging.error(
+            "Failed to initialize a ready Spotify player after %d attempts", retries)
+        return None
+
+    elif source == "local":
+        return AudioPlayer(rfid, playback_state, location, db)
+
     else:
-        logging.warning("Unknown music source: %s", music_data["source"])
+        logging.warning("Unknown music source: %s", source)
         return None
 
 
 def play_sound(event):
     """Play sound file associated with event"""
-
     sounds = {
         "start": "start",
         "confirm": "confirm",

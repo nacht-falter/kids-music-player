@@ -97,6 +97,10 @@ class SpotifyPlayer:
     def _device_url(self, endpoint):
         return f"{self.base_url}/me/player/{endpoint}?device_id={self.device_id}"
 
+    def is_ready(self):
+        playback = self.check_playback_status()
+        return playback is not None and self.active_device == self.device_id
+
     def check_playback_status(self):
         try:
             response = requests.get(
