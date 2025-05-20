@@ -50,12 +50,12 @@ def reset_last_activity():
 
 
 class ButtonHandler:
-    def __init__(self, get_player, set_player, db):
+    def __init__(self, get_player, set_player, database_url):
         self.get_player = get_player
         self.set_player = set_player
         self.last_button = None
         self.consecutive_presses = 0
-        self.db = db
+        self.database_url = database_url
 
         if Button:
             # Set up buttons with callbacks
@@ -135,29 +135,34 @@ class ButtonHandler:
                     utils.play_sound("error")
 
     def _create_and_play_last_player(self):
-        music_data = utils.get_music_data(
-            self.db, utils.get_last_played_rfid(self.db))
-        if not music_data:
-            logging.warning("No last played data to create player.")
-            utils.play_sound("error")
-            return
-
-        if led:
-            stop_event, thread = led.start_flashing(23)
-        else:
-            stop_event, thread = None, None
-
         try:
-            new_player = utils.create_player(music_data, self.db)
-            if new_player:
-                self.set_player(new_player)
-                new_player.play()
+            with sqlite3.connect(self.database_url) as db:
+                music_data = utils.get_music_data(
+                    db, utils.get_last_played_rfid(db))
+                if not music_data:
+                    logging.warning("No last played data to create player.")
+                    utils.play_sound("error")
+                    return
+
+                if led:
+                    stop_event, thread = led.start_flashing(23)
+                else:
+                    stop_event, thread = None, None
+
+                try:
+                    new_player = utils.create_player(music_data, db)
+                    if new_player:
+                        self.set_player(new_player)
+                        new_player.play()
+                except Exception:
+                    logging.exception("Failed to create player.")
+                    utils.play_sound("playback_error")
+                finally:
+                    if led and stop_event and thread:
+                        led.stop_flashing(stop_event, thread)
         except Exception:
-            logging.exception("Failed to create player.")
+            logging.exception("Failed to access database.")
             utils.play_sound("playback_error")
-        finally:
-            if led and stop_event and thread:
-                led.stop_flashing(stop_event, thread)
 
 
 def main():
@@ -187,7 +192,7 @@ def main():
         player = new_player
 
     button_handler = ButtonHandler(
-        get_player, set_player, db) if Button else None
+        get_player, set_player, DATABASE_URL) if Button else None
 
     # Shutdown timer
     def watchdog_loop():

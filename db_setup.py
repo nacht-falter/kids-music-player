@@ -15,7 +15,7 @@ def create_tables(db):
         "source TEXT NOT NULL, "
         "playback_state TEXT, "
         "location TEXT NOT NULL, "
-        "title TEXT, "
+        "title TEXT"
         ");"
     )
 
