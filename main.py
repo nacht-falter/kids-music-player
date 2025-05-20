@@ -7,6 +7,7 @@ import time
 import db_setup
 import env as _
 import utils
+from rfid import RfidReader
 
 try:
     from gpiozero import Button
@@ -194,12 +195,16 @@ def main():
     button_handler = ButtonHandler(
         get_player, set_player, DATABASE_URL) if Button else None
 
+    rfid_reader = RfidReader()
+
+    idle_time = int(IDLE_TIME) if IDLE_TIME else 3600
+
     # Shutdown timer
     def watchdog_loop():
         while True:
             with activity_lock:
                 inactive_for = time.monotonic() - last_activity
-            if inactive_for > (int(IDLE_TIME) if IDLE_TIME else 3600):
+            if inactive_for > idle_time:
                 logging.info(
                     "Watchdog: system has been idle for %.0f seconds", inactive_for)
                 utils.shutdown(player)
@@ -213,52 +218,55 @@ def main():
 
     reset_last_activity()
 
-    while True:
-        # Wait for RFID input
-        rfid = input("Enter RFID: ")
-        reset_last_activity()
+    try:
+        while True:
+            # Wait for RFID input
+            rfid = rfid_reader.read_code()
+            reset_last_activity()
 
-        logging.info("Scanned RFID: %s", rfid)
+            logging.info("Scanned RFID: %s", rfid)
 
-        with player_lock:
-            # Check if RFID is already playing
-            if player and rfid == player.rfid:
-                utils.play_sound("confirm")
-                utils.handle_already_playing(player)
-
-            else:
-                music_data = utils.get_music_data(db, rfid)
-
-                if music_data:
+            with player_lock:
+                # Check if RFID is already playing
+                if player and rfid == player.rfid:
                     utils.play_sound("confirm")
-                    if player:
-                        player.pause_playback()
-                        player.save_playback_state()
+                    utils.handle_already_playing(player)
 
-                    if led:
-                        stop_event, thread = led.start_flashing(23, 0)
-                    else:
-                        stop_event, thread = None, None
-
-                    try:
-                        player = utils.create_player(music_data, db)
-                    except Exception as e:
-                        logging.exception("Failed to create player.")
-                        utils.play_sound("playback_error")
-                        player = None
-                    finally:
-                        if player:
-                            player.play()
-                            if button_handler:
-                                button_handler.set_player(player)
-
-                        utils.save_last_played(db, music_data["rfid"])
-
-                        if led and stop_event and thread:
-                            led.stop_flashing(stop_event, thread)
                 else:
-                    logging.warning("Unknown RFID %s", rfid)
-                    utils.play_sound("error")
+                    music_data = utils.get_music_data(db, rfid)
+
+                    if music_data:
+                        utils.play_sound("confirm")
+                        if player:
+                            player.pause_playback()
+                            player.save_playback_state()
+
+                        if led:
+                            stop_event, thread = led.start_flashing(23, 0)
+                        else:
+                            stop_event, thread = None, None
+
+                        try:
+                            player = utils.create_player(music_data, db)
+                        except Exception as e:
+                            logging.exception("Failed to create player.")
+                            utils.play_sound("playback_error")
+                            player = None
+                        finally:
+                            if player:
+                                player.play()
+                                if button_handler:
+                                    button_handler.set_player(player)
+
+                            utils.save_last_played(db, music_data["rfid"])
+
+                            if led and stop_event and thread:
+                                led.stop_flashing(stop_event, thread)
+                    else:
+                        logging.warning("Unknown RFID %s", rfid)
+                        utils.play_sound("error")
+    finally:
+        rfid_reader.close()
 
 
 if __name__ == "__main__":
