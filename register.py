@@ -1,9 +1,10 @@
 #!/usr/bin/python3
 
+import glob
 import logging
 import os
+import readline
 import sqlite3
-import sys
 from shutil import copy2, copytree
 
 import env as _
@@ -19,12 +20,10 @@ if not DATABASE_URL:
 
 
 def get_db():
-    """Return a connection to the SQLite database."""
     return sqlite3.connect(DATABASE_URL)
 
 
 def create_tables(db):
-    """Create database tables if they don't exist."""
     logging.info("Creating database tables...")
     cursor = db.cursor()
     cursor.execute(
@@ -40,14 +39,12 @@ def create_tables(db):
 
 
 def initialize_db():
-    """Initialize database (create tables if they don't exist)."""
     db = get_db()
     create_tables(db)
     db.close()
 
 
 def list_registered_rfids():
-    """Displays all registered RFIDs and their associated URIs or album paths."""
     db = get_db()
     cursor = db.cursor()
     cursor.execute("SELECT rfid, source, location, title FROM music")
@@ -62,12 +59,26 @@ def list_registered_rfids():
     db.close()
 
 
-def register_spotify(rfid, spotify_uri):
-    """Registers a new RFID card with a Spotify URI."""
+def complete_path(text, state):
+    line = readline.get_line_buffer().split()
+    return [x for x in glob.glob(text + '*')][state]
+
+
+def update_mpd():
+    if not os.system("mpc status") and not os.system("systemctl is-active --quiet mpd"):
+        print("Updating database...")
+        os.system("mpc update")
+    else:
+        print("MPD is not available.")
+
+
+def register_spotify():
+    rfid = input("Enter RFID: ").strip()
+    spotify_uri = input("Enter Spotify URI: ").strip()
+    title = input("Enter title: ").strip()
+
     db = get_db()
     cursor = db.cursor()
-
-    # Check if the RFID is already registered
     cursor.execute("SELECT location FROM music WHERE rfid=?", (rfid,))
     existing = cursor.fetchone()
 
@@ -81,26 +92,36 @@ def register_spotify(rfid, spotify_uri):
         cursor.execute("DELETE FROM music WHERE rfid=?", (rfid,))
 
     cursor.execute(
-        "INSERT INTO music (rfid, source, location) "
-        "VALUES (?, ?, ?)",
-        (rfid, "spotify", spotify_uri)
+        "INSERT INTO music (rfid, source, location, title) "
+        "VALUES (?, ?, ?, ?)",
+        (rfid, "spotify", spotify_uri, title)
     )
     db.commit()
     print(f"Registered card {rfid} with Spotify URI: {spotify_uri}")
     db.close()
 
 
-def register_local_album(rfid, album_path):
-    """Registers a new RFID card with a local album and uploads it."""
-
+def register_local_album():
     if not MUSIC_LIBRARY:
         logging.error("MUSIC_LIBRARY environment variable is not set.")
         raise ValueError("MUSIC_LIBRARY environment variable is required")
 
+    rfid = input("Enter RFID: ").strip()
+
+    # Enable tab directory completion
+    readline.set_completer_delims(' \t\n;')
+    readline.parse_and_bind("tab: complete")
+    readline.set_completer(complete_path)
+
+    album_path = input("Enter path to album: ").strip()
+
+    # Disable tab directory completion
+    readline.set_completer(None)
+
+    title = input("Enter album title: ").strip()
+
     db = get_db()
     cursor = db.cursor()
-
-    # Check if RFID is already registered
     cursor.execute("SELECT location FROM music WHERE rfid=?", (rfid,))
     existing = cursor.fetchone()
 
@@ -118,7 +139,8 @@ def register_local_album(rfid, album_path):
 
     if os.path.exists(album_destination):
         raise FileExistsError(
-            f"Album folder '{album_destination}' already exists. Choose a different album or remove the existing one.")
+            f"Album folder '{album_destination}' already exists. Choose a different album or remove the existing one."
+        )
 
     try:
         if os.path.isdir(album_path):
@@ -127,54 +149,39 @@ def register_local_album(rfid, album_path):
             copy2(album_path, album_destination)
 
         cursor.execute(
-            "INSERT INTO music (rfid, source, location) "
-            "VALUES (?, ?, ?)",
-            (rfid, "local", album_destination)
+            "INSERT INTO music (rfid, source, location, title) "
+            "VALUES (?, ?, ?, ?)",
+            (rfid, "local", album_destination, title)
         )
         db.commit()
         print(
             f"Registered card {rfid} with local album at: {album_destination}")
+
+        if input("Update mpd database? [y/N]: ").strip().lower() in ("y", "yes"):
+            update_mpd()
+
     except Exception as e:
         print(f"Error uploading album: {e}")
     db.close()
 
 
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: python3 register_card.py <command> [options]")
-        sys.exit(1)
-
-    command = sys.argv[1]
-
-    # Initialize the database tables if needed
     initialize_db()
+    while True:
+        print("\nChoose a command: spotify, local, list, quit")
+        command = input("> ").strip().lower()
 
-    if command == "spotify":
-        if len(sys.argv) != 5:
-            print(
-                "Usage: python3 register_card.py spotify <rfid> <spotify_uri>")
-            sys.exit(1)
-        rfid = sys.argv[2]
-        spotify_uri = sys.argv[3]
-        title = sys.argv[4]
-        register_spotify(rfid, spotify_uri)
-
-    elif command == "local":
-        if len(sys.argv) != 5:
-            print(
-                "Usage: python3 register_card.py local <rfid> <album_path>")
-            sys.exit(1)
-        rfid = sys.argv[2]
-        album_path = sys.argv[3]
-        title = sys.argv[4]
-        register_local_album(rfid, album_path)
-
-    elif command == "list":
-        list_registered_rfids()
-
-    else:
-        print("Unknown command. Available commands: spotify, local, list.")
-        sys.exit(1)
+        if command == "spotify":
+            register_spotify()
+        elif command == "local":
+            register_local_album()
+        elif command == "list":
+            list_registered_rfids()
+        elif command in ("quit", "exit"):
+            print("Bye!")
+            break
+        else:
+            print("Unknown command. Try: spotify, local, list, quit.")
 
 
 if __name__ == "__main__":

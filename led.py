@@ -1,3 +1,4 @@
+import threading
 import time
 
 import RPi.GPIO as GPIO
@@ -21,8 +22,26 @@ def turn_off_led(gpio_pin):
 
 
 def flash_led(gpio_pin):
-    for _ in range(0, 2):
+    for _ in range(2):
         toggle_led(gpio_pin)
         time.sleep(0.1)
         toggle_led(gpio_pin)
         time.sleep(0.1)
+
+
+def start_flashing(gpio_pin, interval=0.3):
+    stop_event = threading.Event()
+
+    def _flash_loop():
+        while not stop_event.is_set():
+            flash_led(gpio_pin)
+            time.sleep(interval)
+
+    thread = threading.Thread(target=_flash_loop, daemon=True)
+    thread.start()
+    return stop_event, thread
+
+
+def stop_flashing(stop_event, thread):
+    stop_event.set()
+    thread.join()

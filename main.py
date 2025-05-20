@@ -4,13 +4,9 @@ import sqlite3
 import threading
 import time
 
-import pygame
-import requests
-
 import db_setup
 import env as _
 import utils
-from spotify import get_spotify_auth_token
 
 try:
     from gpiozero import Button
@@ -27,23 +23,23 @@ if os.getenv("DEBUG") == "true":
 else:
     level = logging.INFO
 
+app_dir = os.path.dirname(os.path.abspath(__file__))
+log_path = os.path.join(app_dir, "toem.log")
+
 logging.basicConfig(
     level=level,
     format='%(asctime)s [%(levelname)s] %(message)s',
     handlers=[
-        logging.FileHandler("toem.log"),
+        logging.FileHandler(log_path),
         logging.StreamHandler()
     ]
 )
-
-# Initialize pygame mixer for playing system sounds
-pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=2048)
 
 
 player_lock = threading.Lock()
 last_activity = time.monotonic()
 activity_lock = threading.Lock()
-IDLE_TIME = os.environ.get("IDLE_TIME") 
+IDLE_TIME = os.environ.get("IDLE_TIME")
 
 
 def reset_last_activity():
@@ -54,11 +50,12 @@ def reset_last_activity():
 
 
 class ButtonHandler:
-    def __init__(self, player=None):
-        self.player_ready = False
-        self.player = player
+    def __init__(self, get_player, set_player, db):
+        self.get_player = get_player
+        self.set_player = set_player
         self.last_button = None
         self.consecutive_presses = 0
+        self.db = db
 
         if Button:
             # Set up buttons with callbacks
@@ -80,12 +77,6 @@ class ButtonHandler:
                 "previous_track"
             )
 
-    def handle_loading_led(self):
-        while not self.player_ready:
-            if led:
-                led.toggle_led(23)
-            time.sleep(0.1)
-
     def handle_buttons(self, button):
         reset_last_activity()
 
@@ -104,28 +95,28 @@ class ButtonHandler:
                 elif self.consecutive_presses == 2:
                     self.consecutive_presses = 0
                     logging.info("Shutdown confirmed. Shutting down.")
-                    utils.shutdown(self.player)
+                    utils.shutdown(self.get_player())
 
         elif button == "toggle_playback":
             with player_lock:
-                if self.player:
+                player = self.get_player()
+                if player:
                     logging.info("Toggle playback button pressed.")
                     utils.play_sound(button)
-                    if self.player.playback_started:
-                        self.player.toggle_playback()
+                    if player.playback_started:
+                        player.toggle_playback()
                     else:
-                        self.player.play()
+                        player.play()
                 else:
-                    logging.warning(
-                        "Player is not initialized. Cannot toggle playback.")
-                    utils.play_sound("error")
+                    self._create_and_play_last_player()
 
         elif button == "next_track":
             with player_lock:
-                if self.player:
+                player = self.get_player()
+                if player:
                     logging.info("Next track button pressed.")
                     utils.play_sound(button)
-                    self.player.next_track()
+                    player.next_track()
                 else:
                     logging.warning(
                         "Player is not initialized. Cannot skip to next track.")
@@ -133,41 +124,40 @@ class ButtonHandler:
 
         elif button == "previous_track":
             with player_lock:
-                if self.player:
+                player = self.get_player()
+                if player:
                     logging.info("Previous track button pressed.")
                     utils.play_sound(button)
-                    self.player.previous_track()
+                    player.previous_track()
                 else:
                     logging.warning(
                         "Player is not initialized. Cannot skip to previous track.")
                     utils.play_sound("error")
 
+    def _create_and_play_last_player(self):
+        music_data = utils.get_music_data(
+            self.db, utils.get_last_played_rfid(self.db))
+        if not music_data:
+            logging.warning("No last played data to create player.")
+            utils.play_sound("error")
+            return
 
-def initialize_last_played(db, spotify_auth_token, database_url):
-    """Attempt to initialize the last played player, handling Spotify/network issues."""
-    last_played = utils.get_last_played(db)
-    if not last_played:
-        return None
+        if led:
+            stop_event, thread = led.start_flashing(23)
+        else:
+            stop_event, thread = None, None
 
-    music_data = utils.get_music_data(db, last_played)
-    if not music_data:
-        return None
-
-    with player_lock:
-        player = utils.create_player(
-            spotify_auth_token, music_data, database_url)
-
-        if music_data["source"] == "spotify":
-            if not spotify_auth_token:
-                logging.warning(
-                    "Skipped Spotify player setup due to missing token.")
-                return None
-
-            if not utils.wait_for_spotify_device(player):
-                logging.warning("Spotify device not responding; skipping.")
-                return None
-
-    return player
+        try:
+            new_player = utils.create_player(music_data, self.db)
+            if new_player:
+                self.set_player(new_player)
+                new_player.play()
+        except Exception:
+            logging.exception("Failed to create player.")
+            utils.play_sound("playback_error")
+        finally:
+            if led and stop_event and thread:
+                led.stop_flashing(stop_event, thread)
 
 
 def main():
@@ -186,36 +176,18 @@ def main():
 
     db = sqlite3.connect(DATABASE_URL)
 
-    if Button:
-        button_handler = ButtonHandler(None)
+    player = None
 
-        # Start the LED blinking to indicate loading status
-        threading.Thread(target=button_handler.handle_loading_led,
-                         daemon=True).start()
-    else:
-        button_handler = None
+    # Getter and setter for ButtonHandler
+    def get_player():
+        return player
 
-    try:
-        # check internet connection
-        requests.head("https://api.spotify.com", timeout=1)
-        spotify_auth_token = get_spotify_auth_token()
-    except requests.RequestException:
-        logging.warning(
-            "No internet connection; skipping Spotify player setup.")
-        spotify_auth_token = None
+    def set_player(new_player):
+        nonlocal player
+        player = new_player
 
-    player = initialize_last_played(db, spotify_auth_token, DATABASE_URL)
-
-    if button_handler:
-        button_handler.player = player
-        button_handler.player_ready = True
-
-    utils.play_sound("start")
-    if led:
-        led.turn_off_led(14)
-        led.turn_on_led(23)
-
-    reset_last_activity()
+    button_handler = ButtonHandler(
+        get_player, set_player, db) if Button else None
 
     # Shutdown timer
     def watchdog_loop():
@@ -230,13 +202,16 @@ def main():
 
     threading.Thread(target=watchdog_loop, daemon=True).start()
 
+    utils.play_sound("start")
+    if led:
+        led.turn_on_led(23)
+
+    reset_last_activity()
+
     while True:
         # Wait for RFID input
         rfid = input("Enter RFID: ")
         reset_last_activity()
-
-        if not rfid:
-            break
 
         logging.info("Scanned RFID: %s", rfid)
 
@@ -251,28 +226,29 @@ def main():
 
                 if music_data:
                     utils.play_sound("confirm")
-                    if led:
-                        led.flash_led(23)
                     if player:
                         player.pause_playback()
                         player.save_playback_state()
 
-                    if music_data["source"] == "spotify":
-                        if spotify_auth_token:
-                            player = utils.create_player(
-                                spotify_auth_token, music_data, DATABASE_URL)
-                        else:
-                            logging.warning(
-                                "Cannot play Spotify track: missing auth token")
-                            player = None
+                    if led:
+                        stop_event, thread = led.start_flashing(23)
                     else:
-                        player = utils.create_player(
-                            None, music_data, DATABASE_URL)
+                        stop_event, thread = None, None
+
+                    try:
+                        player = utils.create_player(music_data, db)
+                    except Exception as e:
+                        logging.exception("Failed to create player.")
+                        utils.play_sound("playback_error")
+                        player = None
+                    finally:
+                        if led and stop_event and thread:
+                            led.stop_flashing(stop_event, thread)
 
                     if player:
                         player.play()
                         if button_handler:
-                            button_handler.player = player
+                            button_handler.set_player(player)
 
                     utils.save_last_played(db, music_data["rfid"])
 

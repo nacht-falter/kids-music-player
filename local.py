@@ -2,12 +2,11 @@ import json
 import logging
 import os
 import re
-import sqlite3
 
 
 class AudioPlayer:
-    def __init__(self, rfid, playback_state, location, database_url):
-        self.database_url = database_url
+    def __init__(self, rfid, playback_state, location, db):
+        self.db = db
         self.rfid = rfid
         self.playback_state = (
             json.loads(playback_state)
@@ -17,10 +16,6 @@ class AudioPlayer:
         self.location = location
         self.playing = False
         logging.info("AudioPlayer initialized for RFID %s", self.rfid)
-
-    def check_device_status(self):
-        # Just for interace consistency with SpotifyPlayer
-        return True
 
     def check_playback_status(self):
         mpc_status = os.popen("mpc status").readlines()
@@ -46,7 +41,7 @@ class AudioPlayer:
     def pause_playback(self):
         os.system("mpc -q pause")
         self.playing = False
-        logging.info("Playback paused")
+        ing.info("Playback paused")
 
     def next_track(self):
         os.system("mpc -q next")
@@ -75,11 +70,10 @@ class AudioPlayer:
                 if len(mpc_status) > 1 else "0%"
             )
             self.playback_state = {"track": track_number, "position": position}
-            with sqlite3.connect(self.database_url) as db:
-                db.cursor().execute(
-                    "UPDATE music SET playback_state = ? WHERE rfid = ?",
-                    (json.dumps(self.playback_state), self.rfid),
-                )
+            self.db.cursor().execute(
+                "UPDATE music SET playback_state = ? WHERE rfid = ?",
+                (json.dumps(self.playback_state), self.rfid),
+            )
             logging.info("Playback state saved for RFID %s", self.rfid)
         except Exception as e:
             logging.error("Error saving playback state: %s", e, exc_info=True)

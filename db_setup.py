@@ -7,15 +7,26 @@ def create_tables(db):
     """Create database tables"""
     logging.info("Creating database tables...")
     cursor = db.cursor()
+
+    # Updated music table
     cursor.execute(
-        "CREATE TABLE IF NOT EXISTS music(rfid TEXT PRIMARY KEY, "
-        "source TEXT NOT NULL, playback_state TEXT, location TEXT NOT NULL);"
+        "CREATE TABLE IF NOT EXISTS music("
+        "rfid TEXT PRIMARY KEY, "
+        "source TEXT NOT NULL, "
+        "playback_state TEXT, "
+        "location TEXT NOT NULL, "
+        "title TEXT, "
+        ");"
     )
+
     cursor.execute(
-        "CREATE TABLE IF NOT EXISTS last_played (last_played_rifd_id "
-        "INTEGER PRIMARY KEY AUTOINCREMENT, last_played_rfid TEXT, "
-        "FOREIGN KEY (last_played_rfid) REFERENCES music(rfid));"
+        "CREATE TABLE IF NOT EXISTS last_played ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "last_played_rfid TEXT, "
+        "FOREIGN KEY (last_played_rfid) REFERENCES music(rfid)"
+        ");"
     )
+
     db.commit()
 
 

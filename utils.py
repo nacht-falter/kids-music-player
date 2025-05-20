@@ -1,9 +1,6 @@
 import logging
 import os
-import time
-
-import gtts
-import pygame
+import subprocess
 
 import env as _
 
@@ -32,33 +29,23 @@ def get_music_data(db, rfid):
         return None
 
 
-def wait_for_spotify_device(player, retries=10, delay=0.5):
-    """Wait for the Spotify device to become available."""
-    for _ in range(retries):
-        if player.check_device_status():
-            return True
-        time.sleep(delay)
-    return False
-
-
-def create_player(spotify_auth_token, music_data, database_url):
+def create_player(music_data, db):
     """Create audio player instance"""
     logging.info("Creating player for RFID %s", music_data["rfid"])
 
     if music_data["source"] == "spotify":
         return SpotifyPlayer(
-            spotify_auth_token,
             music_data["rfid"],
             music_data["playback_state"],
             music_data["location"],
-            database_url
+            db
         )
     elif music_data["source"] == "local":
         return AudioPlayer(
             music_data["rfid"],
             music_data["playback_state"],
             music_data["location"],
-            database_url
+            db
         )
     else:
         logging.warning("Unknown music source: %s", music_data["source"])
@@ -67,8 +54,6 @@ def create_player(spotify_auth_token, music_data, database_url):
 
 def play_sound(event):
     """Play sound file associated with event"""
-
-    sound_folder = os.path.dirname(os.path.abspath(__file__)) + "/sounds/"
 
     sounds = {
         "start": "start",
@@ -79,12 +64,26 @@ def play_sound(event):
         "toggle_playback": "click",
         "confirm_shutdown": "confirm_shutdown",
         "shutdown": "shutdown",
+        "playback_error": "playback_error"
     }
-    pygame.mixer.music.load(f"{sound_folder}{sounds[event]}.wav")
-    pygame.mixer.music.play()
 
-    while pygame.mixer.music.get_busy():
-        time.sleep(0.01)
+    if event not in sounds:
+        raise ValueError(f"Sound file for event '{event}' not found.")
+
+    sound_folder = os.path.join(os.path.dirname(
+        os.path.abspath(__file__)), "sounds")
+    file_path = os.path.join(sound_folder, f"{sounds[event]}.wav")
+
+    try:
+        subprocess.Popen(
+            ["aplay", file_path],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+    except FileNotFoundError:
+        logging.error("aplay is not installed or not found in PATH.")
+    except Exception as e:
+        logging.exception(f"Failed to play audio file {file_path}: {e}")
 
 
 def save_last_played(db, rfid):
@@ -98,7 +97,7 @@ def save_last_played(db, rfid):
     logging.info("Last played RFID saved to database: %s", rfid)
 
 
-def get_last_played(db):
+def get_last_played_rfid(db):
     """Get last played album from database"""
     cursor = db.cursor()
     cursor.execute("SELECT last_played_rfid FROM last_played")
@@ -134,25 +133,3 @@ def shutdown(player):
     if os.environ.get("DEVELOPMENT") == "False":
         logging.info("System is shutting down...")
         os.system("sudo shutdown -h now")
-
-
-def speak(text):
-    logging.info("Speaking: %s", text)
-
-    sound_folder = os.path.join(os.path.dirname(
-        os.path.abspath(__file__)), "sounds", "speech")
-    os.makedirs(sound_folder, exist_ok=True)  # Ensure directory exists
-    file_path = os.path.join(sound_folder, "instructions.mp3")
-    if os.path.exists(file_path):
-        os.remove(file_path)
-
-    tts = gtts.gTTS(text=text)
-    tts.save(file_path)
-
-    pygame.mixer.init()
-    pygame.mixer.music.load(file_path)
-    pygame.mixer.music.play()
-
-    # Wait until playback finishes
-    while pygame.mixer.music.get_busy():
-        pygame.time.Clock().tick(10)
