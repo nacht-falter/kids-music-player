@@ -145,7 +145,7 @@ class ButtonHandler:
                     return
 
                 if led:
-                    stop_event, thread = led.start_flashing(23)
+                    stop_event, thread = led.start_flashing(23, 0)
                 else:
                     stop_event, thread = None, None
 
@@ -236,7 +236,7 @@ def main():
                         player.save_playback_state()
 
                     if led:
-                        stop_event, thread = led.start_flashing(23)
+                        stop_event, thread = led.start_flashing(23, 0)
                     else:
                         stop_event, thread = None, None
 
