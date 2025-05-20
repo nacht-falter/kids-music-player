@@ -14,12 +14,10 @@ logging.basicConfig(level=logging.INFO)
 DATABASE_URL = os.getenv("DATABASE_URL")
 MUSIC_LIBRARY = os.getenv("MUSIC_LIBRARY")
 
-if not DATABASE_URL:
-    logging.error("DATABASE_URL environment variable is not set.")
-    raise ValueError("DATABASE_URL environment variable is required")
-
-
 def get_db():
+    if not DATABASE_URL:
+        logging.error("DATABASE_URL environment variable is not set.")
+        raise ValueError("DATABASE_URL environment variable is required")
     return sqlite3.connect(DATABASE_URL)
 
 
@@ -167,21 +165,21 @@ def register_local_album():
 
 def main():
     initialize_db()
-    while True:
-        print("\nChoose a command: spotify, local, list, quit")
-        command = input("> ").strip().lower()
+    commands = "Add (s)potify uri, Add (l)ocal album, l(i)st existing entries, (q)uit"
 
-        if command == "spotify":
-            register_spotify()
-        elif command == "local":
-            register_local_album()
-        elif command == "list":
-            list_registered_rfids()
-        elif command in ("quit", "exit"):
-            print("Bye!")
-            break
-        else:
-            print("Unknown command. Try: spotify, local, list, quit.")
+    print("\nChoose a command:", commands)
+    command = input("> ").strip().lower()
+
+    if command in ("s", "spotify"):
+        register_spotify()
+    elif command in ("l", "local"):
+        register_local_album()
+    elif command in ("i", "list"):
+        list_registered_rfids()
+    elif command in ("q", "quit", "exit"):
+        exit
+    else:
+        print("Unknown command. Try:", commands)
 
 
 if __name__ == "__main__":
