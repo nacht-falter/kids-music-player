@@ -247,16 +247,15 @@ def main():
                         utils.play_sound("playback_error")
                         player = None
                     finally:
+                        if player:
+                            player.play()
+                            if button_handler:
+                                button_handler.set_player(player)
+
+                        utils.save_last_played(db, music_data["rfid"])
+
                         if led and stop_event and thread:
                             led.stop_flashing(stop_event, thread)
-
-                    if player:
-                        player.play()
-                        if button_handler:
-                            button_handler.set_player(player)
-
-                    utils.save_last_played(db, music_data["rfid"])
-
                 else:
                     logging.warning("Unknown RFID %s", rfid)
                     utils.play_sound("error")
