@@ -9,23 +9,32 @@ def create_tables(db):
     cursor = db.cursor()
 
     # Updated music table
-    cursor.execute(
-        "CREATE TABLE IF NOT EXISTS music("
-        "rfid TEXT PRIMARY KEY, "
-        "source TEXT NOT NULL, "
-        "playback_state TEXT, "
-        "location TEXT NOT NULL, "
-        "title TEXT"
-        ");"
-    )
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS music(
+        rfid TEXT PRIMARY KEY,
+        source TEXT NOT NULL,
+        playback_state TEXT,
+        location TEXT NOT NULL,
+        title TEXT,
+        last_modified TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
 
-    cursor.execute(
-        "CREATE TABLE IF NOT EXISTS last_played ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-        "last_played_rfid TEXT, "
-        "FOREIGN KEY (last_played_rfid) REFERENCES music(rfid)"
-        ");"
-    )
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS last_played (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        last_played_rfid TEXT,
+        FOREIGN KEY (last_played_rfid) REFERENCES music(rfid)
+        );
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS sync_meta (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        last_sync TIMESTAMP
+    );
+    """)
+
 
     db.commit()
 

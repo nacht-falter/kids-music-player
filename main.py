@@ -7,6 +7,7 @@ import time
 import db_setup
 import env as _
 import utils
+from remote_sync import sync_db
 from rfid import RfidReader
 
 try:
@@ -19,7 +20,7 @@ try:
 except ImportError:
     led = None
 
-if os.getenv("DEBUG") == "true":
+if os.getenv("DEVELOPMENT", "").lower() == "true":
     level = logging.DEBUG
 else:
     level = logging.INFO
@@ -40,8 +41,8 @@ logging.basicConfig(
 player_lock = threading.Lock()
 last_activity = time.monotonic()
 activity_lock = threading.Lock()
+sync_done = threading.Event()
 IDLE_TIME = os.environ.get("IDLE_TIME")
-
 
 def reset_last_activity():
     global last_activity
@@ -170,18 +171,24 @@ class ButtonHandler:
 def main():
     # Prepare database:
     DATABASE_URL = os.environ.get("DATABASE_URL")
+    SYNC = os.environ.get("ENABLE_SYNC", "").lower() == "true"
 
     if not DATABASE_URL:
         logging.error("DATABASE_URL environment variable is not set.")
         raise ValueError("DATABASE_URL environment variable is required")
 
-    logging.info("Connecting to database at %s", DATABASE_URL)
+    if SYNC:
+        sync_thread = threading.Thread(target=sync_db, args=(DATABASE_URL, sync_done))
+        sync_thread.start()
+    else:
+        logging.info("Sync disabled.")
 
     if not os.path.exists(DATABASE_URL):
         db_setup.create_db(DATABASE_URL)
         logging.info("Database created at %s", DATABASE_URL)
 
     db = sqlite3.connect(DATABASE_URL)
+    logging.info("Connected to database: %s", DATABASE_URL)
 
     player = None
 

@@ -130,16 +130,21 @@ def handle_already_playing(player):
         player.toggle_playback()
 
 
-def shutdown(player):
+def shutdown(player, sync_done=None):
     """Shutdown computer"""
     logging.info("Initiating shutdown...")
     play_sound("shutdown")
     if player:
         player.pause_playback()
         player.save_playback_state()
+
     if led:
-        led.turn_on_led(14)
         led.turn_off_led(23)
+
+    if sync_done and not sync_done.is_set():
+        logging.info("Waiting for sync to complete...")
+        sync_done.wait(timeout=10)
+
     if os.environ.get("DEVELOPMENT") == "False":
         logging.info("System is shutting down...")
         os.system("sudo shutdown -h now")
