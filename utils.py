@@ -30,7 +30,7 @@ def get_music_data(db, rfid):
         return None
 
 
-def create_player(music_data, db, retries=5, delay=1):
+def create_player(music_data, db, retries=10, delay=1):
     """Create audio player instance"""
     rfid = music_data["rfid"]
     source = music_data.get("source")
@@ -42,6 +42,7 @@ def create_player(music_data, db, retries=5, delay=1):
     if source == "spotify":
         for attempt in range(retries):
             player = SpotifyPlayer(rfid, playback_state, location, db)
+            player.transfer_playback(play=False)
             if player.is_ready():
                 logging.info(
                     "Spotify player ready after %d attempt(s)", attempt + 1)

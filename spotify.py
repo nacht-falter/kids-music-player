@@ -97,6 +97,19 @@ class SpotifyPlayer:
     def _device_url(self, endpoint):
         return f"{self.base_url}/me/player/{endpoint}?device_id={self.device_id}"
 
+    def transfer_playback(self, play=False):
+        url = f"{self.base_url}/me/player"
+        data = {"device_ids": [self.device_id], "play": play}
+        try:
+            response = requests.put(
+                url, headers=self._get_headers(), json=data)
+            response.raise_for_status()
+            logging.info("Playback transferred to device %s", self.device_id)
+            return True
+        except requests.RequestException as e:
+            self.handle_exception("Transfer playback failed", e)
+            return False
+
     def is_ready(self):
         playback = self.check_playback_status()
         return playback is not None and self.active_device == self.device_id

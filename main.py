@@ -109,6 +109,7 @@ class ButtonHandler:
                     else:
                         player.play()
                 else:
+                    utils.play_sound(button)
                     self._create_and_play_last_player()
 
         elif button == "next_track":
@@ -249,7 +250,7 @@ def main():
                         try:
                             player = utils.create_player(music_data, db)
                         except Exception as e:
-                            logging.exception("Failed to create player.")
+                            logging.exception(f"Failed to create player. Error: {e}")
                             utils.play_sound("playback_error")
                             player = None
                         finally:
