@@ -26,8 +26,12 @@ def fetch_local_items(cursor, last_sync):
 
 
 def sync_db(database_url, sync_done=None):
-    API_URL = os.environ.get("SYNC_API_URL", "")
+    API_URL = os.environ.get("SYNC_API_URL")
     API_TOKEN = os.environ.get("SYNC_API_TOKEN", "")
+
+    if not API_URL:
+        logging.error("API_URL environment variable is not set.")
+        raise ValueError("API_URL environment variable is required.")
 
     headers = {"Authorization": f"Bearer {API_TOKEN}"}
     try:

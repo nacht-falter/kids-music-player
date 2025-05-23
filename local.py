@@ -41,7 +41,7 @@ class AudioPlayer:
     def pause_playback(self):
         os.system("mpc -q pause")
         self.playing = False
-        ing.info("Playback paused")
+        logging.info("Playback paused")
 
     def next_track(self):
         os.system("mpc -q next")

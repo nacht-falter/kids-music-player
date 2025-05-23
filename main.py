@@ -175,7 +175,7 @@ def main():
 
     if not DATABASE_URL:
         logging.error("DATABASE_URL environment variable is not set.")
-        raise ValueError("DATABASE_URL environment variable is required")
+        raise ValueError("DATABASE_URL environment variable is required.")
 
     if SYNC:
         sync_thread = threading.Thread(target=sync_db, args=(DATABASE_URL, sync_done))
