@@ -177,18 +177,20 @@ def main():
         logging.error("DATABASE_URL environment variable is not set.")
         raise ValueError("DATABASE_URL environment variable is required.")
 
-    if SYNC:
-        sync_thread = threading.Thread(target=sync_db, args=(DATABASE_URL, sync_done))
-        sync_thread.start()
-    else:
-        logging.info("Sync disabled.")
-
     if not os.path.exists(DATABASE_URL):
         db_setup.create_db(DATABASE_URL)
         logging.info("Database created at %s", DATABASE_URL)
 
     db = sqlite3.connect(DATABASE_URL)
     logging.info("Connected to database: %s", DATABASE_URL)
+
+    if SYNC:
+        # schedule_sync(DATABASE_URL, sync_done, 6, 2, 5)
+        sync_thread = threading.Thread(target=sync_db, args=(
+            DATABASE_URL, sync_done), daemon=True)
+        sync_thread.start()
+    else:
+        logging.info("Sync disabled.")
 
     player = None
 
