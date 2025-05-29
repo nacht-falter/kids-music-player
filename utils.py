@@ -1,6 +1,7 @@
 import logging
 import os
 import subprocess
+import sys
 import time
 
 import env as _
@@ -132,7 +133,6 @@ def handle_already_playing(player):
 
 def shutdown(player, sync_done=None):
     """Shutdown computer"""
-    logging.info("Initiating shutdown...")
     play_sound("shutdown")
     if player:
         player.pause_playback()
@@ -145,6 +145,10 @@ def shutdown(player, sync_done=None):
         logging.info("Waiting for sync to complete...")
         sync_done.wait(timeout=10)
 
-    if os.environ.get("DEVELOPMENT") == "False":
-        logging.info("System is shutting down...")
+    logging.info("Shutting down... ")
+    logging.shutdown()
+
+    if os.getenv("DEVELOPMENT", "").lower() == "true":
+        os._exit(os.EX_OK)
+    else:
         os.system("sudo shutdown -h now")

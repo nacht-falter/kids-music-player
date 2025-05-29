@@ -27,9 +27,6 @@ class RfidReader:
         raise FileNotFoundError(
             f"No input device found matching: {device_name}")
 
-    def validate_code(self, code):
-        return len(code) == 10
-
     def read_code(self):
         code = ""
         for event in self.device.read_loop():
@@ -38,11 +35,7 @@ class RfidReader:
                 if key_event.keystate == key_event.key_down:
                     key_name = key_event.keycode
                     if key_name == "KEY_ENTER":
-                        if self.validate_code(code):
                             return code
-                        else:
-                            logging.warning(f"Ignoring invalid code: {code}")
-                        code = ""
                     elif key_name in self.KEY_MAP:
                         code += self.KEY_MAP[key_name]
 

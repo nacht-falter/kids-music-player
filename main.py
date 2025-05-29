@@ -42,7 +42,9 @@ player_lock = threading.Lock()
 last_activity = time.monotonic()
 activity_lock = threading.Lock()
 sync_done = threading.Event()
+
 IDLE_TIME = os.environ.get("IDLE_TIME")
+
 
 def reset_last_activity():
     global last_activity
@@ -218,7 +220,7 @@ def main():
                 logging.info(
                     "Watchdog: system has been idle for %.0f seconds", inactive_for)
                 utils.shutdown(player)
-            time.sleep(5)
+            time.sleep(1)
 
     threading.Thread(target=watchdog_loop, daemon=True).start()
 
@@ -259,7 +261,8 @@ def main():
                         try:
                             player = utils.create_player(music_data, db)
                         except Exception as e:
-                            logging.exception(f"Failed to create player. Error: {e}")
+                            logging.exception(
+                                f"Failed to create player. Error: {e}")
                             utils.play_sound("playback_error")
                             player = None
                         finally:
