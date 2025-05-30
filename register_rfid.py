@@ -3,8 +3,9 @@ import os
 import requests
 from tabulate import tabulate
 
-import env as _
+from dotenv import load_dotenv
 
+load_dotenv()
 
 def list_registered_rfids(api_url, headers):
     """List registered RFID codes from the remote database """
