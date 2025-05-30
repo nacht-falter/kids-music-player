@@ -1,19 +1,15 @@
 import logging
 import os
 import subprocess
-import sys
 import time
 
-import env as _
+from local import AudioPlayer
+from spotify import SpotifyPlayer
 
 try:
     import led
 except ImportError:
     led = None
-
-
-from local import AudioPlayer
-from spotify import SpotifyPlayer
 
 
 def get_music_data(db, rfid):
@@ -152,3 +148,26 @@ def shutdown(player, sync_done=None):
         os._exit(os.EX_OK)
     else:
         os.system("sudo shutdown -h now")
+
+
+def verify_env_file(config):
+    if not config:
+        raise ValueError(".env file is missing or empty.")
+
+    required = [
+        "SPOTIFY_USERCREDS",
+        "SPOTIFY_REFRESH_TOKEN",
+        "SPOTIFY_DEVICE_ID",
+        "DATABASE_URL",
+        "RFID_READER"
+    ]
+
+    missing = [k for k in required if not config.get(k)]
+    if missing:
+        raise ValueError(
+            f"Missing required environment variable: {', '.join(missing)}")
+
+    if config.get("ENABLE_SYNC", "").lower() == "true":
+        if not config.get("SYNC_API_URL") or not config.get("SYNC_API_TOKEN"):
+            raise ValueError(
+                "ENABLE_SYNC is true but SYNC_API_URL or SYNC_API_TOKEN is missing.")

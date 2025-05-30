@@ -1,15 +1,16 @@
 import logging
 import os
 import sqlite3
+import sys
 import threading
 import time
 
+from dotenv import load_dotenv
+
 import db_setup
-import env as _
 import utils
 from remote_sync import sync_db
 from rfid import RfidReader
-from dotenv import load_dotenv
 
 try:
     from gpiozero import Button
@@ -23,13 +24,20 @@ except ImportError:
 
 load_dotenv()
 
+try:
+    utils.verify_env_file(os.environ)
+except Exception as e:
+    print(f"Config error: {e}")
+    sys.exit(1)
+
 if os.getenv("DEVELOPMENT", "").lower() == "true":
     level = logging.DEBUG
 else:
     level = logging.INFO
 
 app_dir = os.path.dirname(os.path.abspath(__file__))
-log_path = os.path.join(app_dir, "toem.log")
+app_name = os.getenv("APP_NAME", "rfid_music_player").lower()
+log_path = os.path.join(app_dir, f"{app_name}.log")
 
 logging.basicConfig(
     level=level,
@@ -39,7 +47,6 @@ logging.basicConfig(
         logging.StreamHandler()
     ]
 )
-
 
 player_lock = threading.Lock()
 last_activity = time.monotonic()
