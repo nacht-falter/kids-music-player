@@ -13,284 +13,234 @@ from remote_sync import sync_db
 from rfid import RfidReader
 
 try:
-    from gpiozero import Button
-except ImportError:
-    Button = None
+    from buttons import ButtonHandler
+except (ImportError, RuntimeError):
+    ButtonHandler = None
 
 try:
     import led
 except ImportError:
     led = None
 
-load_dotenv()
 
-try:
-    utils.verify_env_file(os.environ)
-except Exception as e:
-    print(f"Config error: {e}")
-    sys.exit(1)
+class RFIDMusicPlayer:
+    """Main application class for the RFID Music Player."""
 
-if os.getenv("DEVELOPMENT", "").lower() == "true":
-    level = logging.DEBUG
-else:
-    level = logging.INFO
+    def __init__(self):
+        self.player = None
+        self.player_lock = threading.Lock()
+        self.last_activity = time.monotonic()
+        self.activity_lock = threading.Lock()
+        self.sync_done = threading.Event()
+        self.db = None
+        self.database_url = None
+        self.rfid_reader = None
+        self.button_handler = None
 
-app_dir = os.path.dirname(os.path.abspath(__file__))
-app_name = os.getenv("APP_NAME", "rfid_music_player").lower()
-log_path = os.path.join(app_dir, f"{app_name}.log")
+    def initialize(self):
+        """Initialize the application configuration and logging."""
+        load_dotenv()
 
-logging.basicConfig(
-    level=level,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    handlers=[
-        logging.FileHandler(log_path),
-        logging.StreamHandler()
-    ]
-)
-
-player_lock = threading.Lock()
-last_activity = time.monotonic()
-activity_lock = threading.Lock()
-sync_done = threading.Event()
-
-IDLE_TIME = os.environ.get("IDLE_TIME")
-
-
-def reset_last_activity():
-    global last_activity
-    with activity_lock:
-        last_activity = time.monotonic()
-        logging.debug("Last activity reset at %.0f", last_activity)
-
-
-class ButtonHandler:
-    def __init__(self, get_player, set_player, database_url):
-        self.get_player = get_player
-        self.set_player = set_player
-        self.last_button = None
-        self.consecutive_presses = 0
-        self.database_url = database_url
-
-        if Button:
-            # Set up buttons with callbacks
-            self.button_3 = Button(3)
-            self.button_3.when_pressed = lambda: self.handle_buttons(
-                "shutdown")
-
-            self.button_17 = Button(17)
-            self.button_17.when_pressed = lambda: self.handle_buttons(
-                "toggle_playback"
-            )
-
-            self.button_27 = Button(27)
-            self.button_27.when_pressed = lambda: self.handle_buttons(
-                "next_track")
-
-            self.button_22 = Button(22)
-            self.button_22.when_pressed = lambda: self.handle_buttons(
-                "previous_track"
-            )
-
-    def handle_buttons(self, button):
-        reset_last_activity()
-
-        if self.last_button == button:
-            self.consecutive_presses += 1
-        else:
-            self.last_button = button
-            self.consecutive_presses = 1
-
-        if button == "shutdown":
-            with player_lock:
-                if self.consecutive_presses == 1:
-                    logging.info(
-                        "Shutdown button pressed once. Confirming shutdown.")
-                    utils.play_sound("confirm_shutdown")
-                elif self.consecutive_presses == 2:
-                    self.consecutive_presses = 0
-                    logging.info("Shutdown confirmed. Shutting down.")
-                    utils.shutdown(self.get_player())
-
-        elif button == "toggle_playback":
-            with player_lock:
-                player = self.get_player()
-                if player:
-                    logging.info("Toggle playback button pressed.")
-                    utils.play_sound(button)
-                    if player.playback_started:
-                        player.toggle_playback()
-                    else:
-                        player.play()
-                else:
-                    utils.play_sound(button)
-                    self._create_and_play_last_player()
-
-        elif button == "next_track":
-            with player_lock:
-                player = self.get_player()
-                if player:
-                    logging.info("Next track button pressed.")
-                    utils.play_sound(button)
-                    player.next_track()
-                else:
-                    logging.warning(
-                        "Player is not initialized. Cannot skip to next track.")
-                    utils.play_sound("error")
-
-        elif button == "previous_track":
-            with player_lock:
-                player = self.get_player()
-                if player:
-                    logging.info("Previous track button pressed.")
-                    utils.play_sound(button)
-                    player.previous_track()
-                else:
-                    logging.warning(
-                        "Player is not initialized. Cannot skip to previous track.")
-                    utils.play_sound("error")
-
-    def _create_and_play_last_player(self):
         try:
-            with sqlite3.connect(self.database_url) as db:
-                music_data = utils.get_music_data(
-                    db, utils.get_last_played_rfid(db))
-                if not music_data:
-                    logging.warning("No last played data to create player.")
-                    utils.play_sound("error")
-                    return
+            utils.verify_env_file(os.environ)
+        except Exception as e:
+            print(f"Config error: {e}")
+            return False
 
-                if led:
-                    stop_event, thread = led.start_flashing(23, 0)
+        if os.getenv("DEVELOPMENT", "").lower() == "true":
+            level = logging.DEBUG
+        else:
+            level = logging.INFO
+
+        app_dir = os.path.dirname(os.path.abspath(__file__))
+        app_name = os.getenv("APP_NAME", "rfid_music_player").lower()
+        log_path = os.path.join(app_dir, f"{app_name}.log")
+
+        logging.basicConfig(
+            level=level,
+            format='%(asctime)s [%(levelname)s] %(message)s',
+            handlers=[
+                logging.FileHandler(log_path),
+                logging.StreamHandler()
+            ]
+        )
+
+        idle_time_env = os.environ.get("IDLE_TIME")
+        self.idle_time = int(idle_time_env) if idle_time_env else 3600
+
+        return True
+
+    def setup_database(self):
+        """Setup and connect to the database."""
+        self.database_url = os.environ.get("DATABASE_URL")
+
+        if not self.database_url:
+            logging.error("DATABASE_URL environment variable is not set.")
+            raise ValueError("DATABASE_URL environment variable is required.")
+
+        if not os.path.exists(self.database_url):
+            db_setup.create_db(self.database_url)
+            logging.info("Database created at %s", self.database_url)
+
+        self.db = sqlite3.connect(self.database_url)
+        logging.info("Connected to database: %s", self.database_url)
+
+    def setup_sync(self):
+        """Setup database synchronization if enabled."""
+        sync_enabled = os.environ.get("ENABLE_SYNC", "").lower() == "true"
+
+        if sync_enabled:
+            sync_thread = threading.Thread(
+                target=sync_db,
+                args=(self.database_url, self.sync_done),
+                daemon=True
+            )
+            sync_thread.start()
+            logging.info("Database sync enabled")
+        else:
+            logging.info("Sync disabled.")
+
+    def setup_hardware(self):
+        """Setup hardware components (buttons, RFID reader)."""
+        if ButtonHandler:
+            self.button_handler = ButtonHandler(
+                self.get_player,
+                self.set_player,
+                self.database_url,
+                self.player_lock,
+                self.reset_last_activity
+            )
+
+        self.rfid_reader = RfidReader()
+
+    def get_player(self):
+        """Get the current player instance."""
+        return self.player
+
+    def set_player(self, new_player):
+        """Set the current player instance."""
+        self.player = new_player
+
+    def reset_last_activity(self):
+        """Reset the last activity timestamp."""
+        with self.activity_lock:
+            self.last_activity = time.monotonic()
+            logging.debug("Last activity reset at %.0f", self.last_activity)
+
+    def start_watchdog(self):
+        """Start the idle watchdog timer."""
+        def watchdog_loop():
+            while True:
+                with self.activity_lock:
+                    inactive_for = time.monotonic() - self.last_activity
+                if inactive_for > self.idle_time:
+                    logging.info(
+                        "Watchdog: system has been idle for %.0f seconds",
+                        inactive_for
+                    )
+                    utils.shutdown(self.player)
+                time.sleep(1)
+
+        threading.Thread(target=watchdog_loop, daemon=True).start()
+
+    def handle_rfid_scan(self, rfid):
+        """Handle an RFID scan event."""
+        logging.info("Scanned RFID: %s", rfid)
+
+        with self.player_lock:
+            # Check if RFID is already playing
+            if self.player and rfid == self.player.rfid:
+                utils.play_sound("confirm")
+                utils.handle_already_playing(self.player)
+            else:
+                music_data=utils.get_music_data(self.db, rfid)
+
+                if music_data:
+                    utils.play_sound("confirm")
+
+                    if self.player:
+                        self.player.pause_playback()
+                        self.player.save_playback_state()
+
+                    # Start LED flashing
+                    if led:
+                        stop_event, thread=led.start_flashing(23, 0)
+                    else:
+                        stop_event, thread=None, None
+
+                    try:
+                        self.player=utils.create_player(music_data, self.db)
+                    except Exception as e:
+                        logging.exception(
+                            f"Failed to create player. Error: {e}")
+                        utils.play_sound("playback_error")
+                        self.player=None
+                    finally:
+                        if self.player:
+                            self.player.play()
+                            if self.button_handler:
+                                self.button_handler.set_player(self.player)
+
+                        utils.save_last_played(self.db, music_data["rfid"])
+
+                        # Stop LED flashing
+                        if led and stop_event and thread:
+                            led.stop_flashing(stop_event, thread)
                 else:
-                    stop_event, thread = None, None
+                    logging.warning("Unknown RFID %s", rfid)
+                    utils.play_sound("error")
 
-                try:
-                    new_player = utils.create_player(music_data, db)
-                    if new_player:
-                        self.set_player(new_player)
-                        new_player.play()
-                except Exception:
-                    logging.exception("Failed to create player.")
-                    utils.play_sound("playback_error")
-                finally:
-                    if led and stop_event and thread:
-                        led.stop_flashing(stop_event, thread)
-        except Exception:
-            logging.exception("Failed to access database.")
-            utils.play_sound("playback_error")
+    def run(self):
+        """Main application loop."""
+        try:
+            if not self.initialize():
+                return 1
+
+            self.setup_database()
+            self.setup_sync()
+            self.setup_hardware()
+
+            self.start_watchdog()
+
+            utils.play_sound("start")
+            if led:
+                led.turn_on_led(23)
+
+            self.reset_last_activity()
+
+            while True:
+                # Wait for RFID input
+                if self.rfid_reader:
+                    rfid=self.rfid_reader.read_code()
+                else:
+                    logging.error("RFID reader not initialized")
+                    break
+                self.reset_last_activity()
+                self.handle_rfid_scan(rfid)
+
+        except KeyboardInterrupt:
+            logging.info("Application interrupted by user")
+        except Exception as e:
+            logging.exception(f"Unexpected error: {e}")
+            return 1
+        finally:
+            self.cleanup()
+
+        return 0
+
+    def cleanup(self):
+        """Clean up resources."""
+        if self.rfid_reader:
+            self.rfid_reader.close()
+        if self.db:
+            self.db.close()
 
 
 def main():
-    # Prepare database:
-    DATABASE_URL = os.environ.get("DATABASE_URL")
-    SYNC = os.environ.get("ENABLE_SYNC", "").lower() == "true"
-
-    if not DATABASE_URL:
-        logging.error("DATABASE_URL environment variable is not set.")
-        raise ValueError("DATABASE_URL environment variable is required.")
-
-    if not os.path.exists(DATABASE_URL):
-        db_setup.create_db(DATABASE_URL)
-        logging.info("Database created at %s", DATABASE_URL)
-
-    db = sqlite3.connect(DATABASE_URL)
-    logging.info("Connected to database: %s", DATABASE_URL)
-
-    if SYNC:
-        # schedule_sync(DATABASE_URL, sync_done, 6, 2, 5)
-        sync_thread = threading.Thread(target=sync_db, args=(
-            DATABASE_URL, sync_done), daemon=True)
-        sync_thread.start()
-    else:
-        logging.info("Sync disabled.")
-
-    player = None
-
-    # Getter and setter for ButtonHandler
-    def get_player():
-        return player
-
-    def set_player(new_player):
-        nonlocal player
-        player = new_player
-
-    button_handler = ButtonHandler(
-        get_player, set_player, DATABASE_URL) if Button else None
-
-    rfid_reader = RfidReader()
-
-    idle_time = int(IDLE_TIME) if IDLE_TIME else 3600
-
-    # Shutdown timer
-    def watchdog_loop():
-        while True:
-            with activity_lock:
-                inactive_for = time.monotonic() - last_activity
-            if inactive_for > idle_time:
-                logging.info(
-                    "Watchdog: system has been idle for %.0f seconds", inactive_for)
-                utils.shutdown(player)
-            time.sleep(1)
-
-    threading.Thread(target=watchdog_loop, daemon=True).start()
-
-    utils.play_sound("start")
-    if led:
-        led.turn_on_led(23)
-
-    reset_last_activity()
-
-    try:
-        while True:
-            # Wait for RFID input
-            rfid = rfid_reader.read_code()
-            reset_last_activity()
-
-            logging.info("Scanned RFID: %s", rfid)
-
-            with player_lock:
-                # Check if RFID is already playing
-                if player and rfid == player.rfid:
-                    utils.play_sound("confirm")
-                    utils.handle_already_playing(player)
-
-                else:
-                    music_data = utils.get_music_data(db, rfid)
-
-                    if music_data:
-                        utils.play_sound("confirm")
-                        if player:
-                            player.pause_playback()
-                            player.save_playback_state()
-
-                        if led:
-                            stop_event, thread = led.start_flashing(23, 0)
-                        else:
-                            stop_event, thread = None, None
-
-                        try:
-                            player = utils.create_player(music_data, db)
-                        except Exception as e:
-                            logging.exception(
-                                f"Failed to create player. Error: {e}")
-                            utils.play_sound("playback_error")
-                            player = None
-                        finally:
-                            if player:
-                                player.play()
-                                if button_handler:
-                                    button_handler.set_player(player)
-
-                            utils.save_last_played(db, music_data["rfid"])
-
-                            if led and stop_event and thread:
-                                led.stop_flashing(stop_event, thread)
-                    else:
-                        logging.warning("Unknown RFID %s", rfid)
-                        utils.play_sound("error")
-    finally:
-        rfid_reader.close()
+    """Entry point for the application."""
+    app=RFIDMusicPlayer()
+    return app.run()
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
