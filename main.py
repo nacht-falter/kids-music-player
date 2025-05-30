@@ -9,6 +9,7 @@ import env as _
 import utils
 from remote_sync import sync_db
 from rfid import RfidReader
+from dotenv import load_dotenv
 
 try:
     from gpiozero import Button
@@ -19,6 +20,8 @@ try:
     import led
 except ImportError:
     led = None
+
+load_dotenv()
 
 if os.getenv("DEVELOPMENT", "").lower() == "true":
     level = logging.DEBUG
