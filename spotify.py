@@ -13,8 +13,14 @@ class SpotifyAuthManager:
     def __init__(self):
         self.token = None
         self.expiry = 0  # Timestamp when token expires
-        self.usercreds = os.environ.get("USERCREDS")
-        self.refresh_token = os.environ.get("REFRESH_TOKEN")
+        self.usercreds = os.environ.get("SPOTIFY_USERCREDS")
+        self.refresh_token = os.environ.get("SPOTIFY_REFRESH_TOKEN")
+
+        if not self.usercreds:
+            raise ValueError("SPOTIFY_USERCREDS environment variable is not set")
+
+        if not self.refresh_token:
+            raise ValueError("SPOTIFY_REFRESH_TOKEN environment variable is not set")
 
     def get_token(self):
         if not self.token or time.time() >= self.expiry:
@@ -74,9 +80,9 @@ class SpotifyPlayer:
     def __init__(self, rfid, playback_state, location, db):
         self.base_url = "https://api.spotify.com/v1"
         self.auth_manager = get_auth_manager()
-        self.device_id = os.environ.get("DEVICE_ID")
+        self.device_id = os.environ.get("SPOTIFY_DEVICE_ID")
         if not self.device_id:
-            raise ValueError("DEVICE_ID environment variable is not set")
+            raise ValueError("SPOTIFY_DEVICE_ID environment variable is not set")
         self.db = db
         self.rfid = rfid
         self.playback_state = (
