@@ -35,7 +35,7 @@ class RfidReader:
                 if key_event.keystate == key_event.key_down:
                     key_name = key_event.keycode
                     if key_name == "KEY_ENTER":
-                            return code
+                        return code
                     elif key_name in self.KEY_MAP:
                         code += self.KEY_MAP[key_name]
 
