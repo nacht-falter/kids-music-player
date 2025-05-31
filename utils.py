@@ -60,7 +60,7 @@ def create_player(music_data, db, retries=10, delay=1):
         return None
 
 
-def play_sound(event):
+def play_sound(event, blocking=False):
     """Play sound file associated with event"""
     sounds = {
         "start": "start",
@@ -82,11 +82,17 @@ def play_sound(event):
     file_path = os.path.join(sound_folder, f"{sounds[event]}.wav")
 
     try:
-        subprocess.Popen(
-            ["aplay", file_path],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-        )
+        if blocking:
+            subprocess.run(
+                ["aplay", file_path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL)
+        else:
+            subprocess.Popen(
+                ["aplay", file_path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
     except FileNotFoundError:
         logging.error("aplay is not installed or not found in PATH.")
     except Exception as e:
@@ -129,7 +135,7 @@ def handle_already_playing(player):
 
 def shutdown(player, sync_done=None):
     """Shutdown computer"""
-    play_sound("shutdown")
+    play_sound("shutdown", blocking=True)
     if player:
         player.pause_playback()
         player.save_playback_state()
