@@ -9,13 +9,9 @@ from dotenv import load_dotenv
 
 import db_setup
 import utils
+from buttons import ButtonHandler
 from remote_sync import sync_db
 from rfid import RfidReader
-
-try:
-    from buttons import ButtonHandler
-except (ImportError, RuntimeError):
-    ButtonHandler = None
 
 try:
     import led
@@ -102,7 +98,7 @@ class RFIDMusicPlayer:
 
     def setup_hardware(self):
         """Setup hardware components (buttons, RFID reader)."""
-        if ButtonHandler:
+        try:
             self.button_handler = ButtonHandler(
                 self.get_player,
                 self.set_player,
@@ -110,6 +106,8 @@ class RFIDMusicPlayer:
                 self.player_lock,
                 self.reset_last_activity
             )
+        except RuntimeError as e:
+            logging.warning(e)
 
         self.rfid_reader = RfidReader()
 
@@ -153,7 +151,7 @@ class RFIDMusicPlayer:
                 utils.play_sound("confirm")
                 utils.handle_already_playing(self.player)
             else:
-                music_data=utils.get_music_data(self.db, rfid)
+                music_data = utils.get_music_data(self.db, rfid)
 
                 if music_data:
                     utils.play_sound("confirm")
@@ -164,17 +162,17 @@ class RFIDMusicPlayer:
 
                     # Start LED flashing
                     if led:
-                        stop_event, thread=led.start_flashing(23, 0)
+                        stop_event, thread = led.start_flashing(23, 0)
                     else:
-                        stop_event, thread=None, None
+                        stop_event, thread = None, None
 
                     try:
-                        self.player=utils.create_player(music_data, self.db)
+                        self.player = utils.create_player(music_data, self.db)
                     except Exception as e:
                         logging.exception(
                             f"Failed to create player. Error: {e}")
                         utils.play_sound("playback_error")
-                        self.player=None
+                        self.player = None
                     finally:
                         if self.player:
                             self.player.play()
@@ -211,7 +209,7 @@ class RFIDMusicPlayer:
             while True:
                 # Wait for RFID input
                 if self.rfid_reader:
-                    rfid=self.rfid_reader.read_code()
+                    rfid = self.rfid_reader.read_code()
                 else:
                     logging.error("RFID reader not initialized")
                     break
@@ -238,7 +236,7 @@ class RFIDMusicPlayer:
 
 def main():
     """Entry point for the application."""
-    app=RFIDMusicPlayer()
+    app = RFIDMusicPlayer()
     return app.run()
 
 

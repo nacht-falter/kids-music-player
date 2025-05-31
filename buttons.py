@@ -16,6 +16,10 @@ except ImportError:
 
 class ButtonHandler:
     def __init__(self, get_player, set_player, database_url, player_lock, reset_last_activity):
+        if not Button:
+            raise RuntimeError(
+                "gpiozero.Button is not available. Cannot initialize ButtonHandler.")
+
         self.get_player = get_player
         self.set_player = set_player
         self.last_button = None
