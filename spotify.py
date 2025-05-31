@@ -181,7 +181,6 @@ class SpotifyPlayer:
             response = requests.put(url, headers=self._get_headers())
             response.raise_for_status()
             self.playing = False
-            self.active_device = None
             logging.info("Playback paused")
         except requests.RequestException as e:
             self.handle_exception("Pause failed", e)
