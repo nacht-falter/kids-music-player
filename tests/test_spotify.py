@@ -388,3 +388,44 @@ def test_spotify_player_reclaim_uses_fresh_position(monkeypatch):
         assert sent["context_uri"] == "spotify:album:123"
         # 90000, not the 48360 it was constructed with.
         assert sent["position_ms"] == 90000
+
+def test_save_playback_state_falls_back_when_not_ours(monkeypatch):
+    """Transferring playback away then shutting down must not lose the session"""
+    monkeypatch.setenv("SPOTIFY_DEVICE_ID", "test_device")
+
+    with patch.dict('sys.modules', {'utils': MagicMock()}) as mods:
+        from spotify import SpotifyPlayer
+        known = '{"offset": {"position": 3}, "position_ms": 120000}'
+        player = SpotifyPlayer("rfid123", known, "spotify:album:123")
+
+        # A phone has taken the session and plays something else.
+        foreign = _playback_status("phone", "spotify:album:999")
+        with patch.object(player.auth_manager, "get_token", return_value="tok"), \
+                patch('spotify.requests.get', return_value=foreign), \
+                patch("spotify.utils.persist_playback_state") as mock_persist:
+            player.save_playback_state()
+
+        # The last position recorded while we owned playback is written,
+        # not the phone's position and not nothing at all.
+        mock_persist.assert_called_once_with(
+            "rfid123", {"offset": {"position": 3}, "position_ms": 120000})
+
+def test_refresh_playback_state_skips_unchanged(monkeypatch):
+    """A paused player must not rewrite an identical row every tick"""
+    monkeypatch.setenv("SPOTIFY_DEVICE_ID", "test_device")
+
+    with patch.dict('sys.modules', {'utils': MagicMock()}):
+        from spotify import SpotifyPlayer
+        player = SpotifyPlayer("rfid123", None, "spotify:album:123")
+
+        status = _playback_status("test_device", "spotify:album:123",
+                                  is_playing=False)
+        status.json.return_value["progress_ms"] = 5000
+        status.json.return_value["item"] = {"uri": "spotify:track:x",
+                                            "track_number": 1}
+        with patch.object(player.auth_manager, "get_token", return_value="tok"), \
+                patch('spotify.requests.get', return_value=status), \
+                patch("spotify.utils.persist_playback_state") as mock_persist:
+            assert player.refresh_playback_state() is True   # first: changed
+            assert player.refresh_playback_state() is False  # second: identical
+            assert mock_persist.call_count == 1

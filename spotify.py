@@ -163,8 +163,14 @@ class SpotifyPlayer:
         Once the interrupting device holds the session our position is gone
         from Spotify, so it has to be captured beforehand.
         """
+        previous = self.playback_state
         playback = self.check_playback_status()
         if not self.owns_playback(playback):
+            return False
+
+        # A paused player would otherwise rewrite an identical row every tick,
+        # indefinitely, for no benefit.
+        if self.playback_state == previous:
             return False
 
         try:
@@ -320,19 +326,29 @@ class SpotifyPlayer:
         except requests.RequestException as e:
             self.handle_exception("Restart failed", e)
 
+    def _persist_state(self, state):
+        try:
+            utils.persist_playback_state(self.rfid, state)
+            logging.info("Playback state saved for RFID %s", self.rfid)
+            return True
+        except (sqlite3.DatabaseError, ValueError) as e:
+            self.handle_exception("Saving playback state failed", e)
+            return False
+
     def save_playback_state(self):
         playback = self.check_playback_status()
-        if not playback:
-            logging.debug("No playback data available to save")
-            return
 
-        # /me/player reports whatever the account is playing, on any device.
-        # Saving that blindly writes a foreign album's position onto this card.
+        # /me/player reports whatever the account is playing, on any device, so
+        # the live payload cannot be trusted here. But refusing to write at all
+        # loses the session: transferring playback to a phone and then shutting
+        # down leaves nothing to resume from. Fall back to the last position we
+        # recorded while we did own playback - self.playback_state is only ever
+        # set from our own playback, so it can never carry a foreign position.
         if not self.owns_playback(playback):
             logging.info(
-                "Not saving playback state for RFID %s: current playback is "
-                "not ours", self.rfid)
-            return
+                "Current playback is not ours; saving last known position for "
+                "RFID %s", self.rfid)
+            return self._persist_state(self.playback_state)
 
         position_ms = playback.get("progress_ms", 0)
         item = playback.get("item") or {}
@@ -362,11 +378,7 @@ class SpotifyPlayer:
             "position_ms": position_ms,
         }
 
-        try:
-            utils.persist_playback_state(self.rfid, self.playback_state)
-            logging.info("Playback state saved for RFID %s", self.rfid)
-        except (sqlite3.DatabaseError, ValueError) as e:
-            self.handle_exception("Saving playback state failed", e)
+        return self._persist_state(self.playback_state)
 
     def _get_track_position_in_playlist(self, playlist_id, track_uri):
         headers = self._get_headers()
