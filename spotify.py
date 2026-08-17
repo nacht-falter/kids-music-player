@@ -13,12 +13,23 @@ import utils
 class SpotifyAuthError(requests.RequestException):
     """Raised when no usable access token is available
 
+    `permanent` separates two very different situations that both surface as
+    "no token": Spotify rejecting the credentials (re-authorization needed, and
+    retrying is pointless) versus simply not having managed to fetch one yet
+    (no network at boot, say - where retrying is the whole point). Treating the
+    second as permanent made a card scanned seconds after power-on fail while
+    the wifi was still associating.
+
     Subclasses RequestException so the existing `except requests.RequestException`
     handlers treat it like any other API failure. Raising something they do not
     catch would propagate to main.run(), which returns 1, and systemd's
     StartLimitBurst would then park the unit in a failed state after five
     restarts - turning an expired token into a device that stays dead.
     """
+
+    def __init__(self, *args, permanent=False, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.permanent = permanent
 
 
 class SpotifyAuthManager:
@@ -220,8 +231,12 @@ class SpotifyPlayer:
             # Previously this sent "Bearer None" and let Spotify reject it,
             # which buried the real cause under a 401 from whichever call
             # happened to be next.
+            rejected = bool(self.auth_manager.rejected_at)
             raise SpotifyAuthError(
-                "No Spotify access token available; re-authorization needed")
+                "No Spotify access token available; "
+                + ("re-authorization needed" if rejected
+                   else "could not reach Spotify to fetch one"),
+                permanent=rejected)
         return {"Authorization": f"Bearer {token}"}
 
     def _device_url(self, endpoint):

@@ -217,12 +217,12 @@ def test_verify_env_file_enable_sync_missing():
     }
     with pytest.raises(ValueError):
         verify_env_file(config) 
-def test_create_player_fails_fast_on_auth_error(monkeypatch):
-    """A dead token must not cost the full retry budget of silence"""
+def test_create_player_fails_fast_on_permanent_auth_error(monkeypatch):
+    """Rejected credentials must not cost the full retry budget of silence"""
     import spotify
 
     def boom(*args, **kwargs):
-        raise spotify.SpotifyAuthError("no token")
+        raise spotify.SpotifyAuthError("rejected", permanent=True)
 
     monkeypatch.setattr(spotify.SpotifyPlayer, "transfer_playback", boom)
     monkeypatch.setenv("SPOTIFY_DEVICE_ID", "test_device")
@@ -315,3 +315,27 @@ def test_create_player_still_checks_readiness_after_successful_transfer():
         assert create_player(music_data, retries=3) is not None
 
     assert calls["is_ready"] == 1
+
+
+def test_create_player_retries_when_the_token_is_merely_unavailable(monkeypatch):
+    """No network at boot is transient - giving up in 6s broke card scans
+
+    Observed on toem2 2026-08-17 15:50: wifi was still associating, the token
+    request failed, and the scan errored after 6.1s on a device where nothing
+    was wrong.
+    """
+    import spotify
+    attempts = {"n": 0}
+
+    def no_token_yet(self, play=False):
+        attempts["n"] += 1
+        raise spotify.SpotifyAuthError("could not reach Spotify", permanent=False)
+
+    with patch.object(spotify.SpotifyPlayer, "transfer_playback", no_token_yet), \
+            patch.dict(os.environ, {"SPOTIFY_DEVICE_ID": "d"}), \
+            patch("utils.time.sleep"):
+        music_data = {"rfid": "abc", "source": "spotify",
+                      "playback_state": None, "location": "spotify:album:x"}
+        assert create_player(music_data, retries=6) is None
+
+    assert attempts["n"] == 6, "should use the whole budget, not abort"

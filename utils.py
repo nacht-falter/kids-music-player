@@ -70,11 +70,18 @@ def create_player(music_data, retries=10, delay=1):
                 player = SpotifyPlayer(rfid, playback_state, location)
                 transferred = player.transfer_playback(play=False)
             except SpotifyAuthError as e:
-                # Retrying cannot produce a token. Fail now so the card gets
-                # an error sound immediately instead of after the full retry
-                # budget of silence.
-                logging.error("Cannot start Spotify playback: %s", e)
-                return None
+                if e.permanent:
+                    # Spotify rejected the credentials; retrying cannot produce
+                    # a token, so fail now rather than after the full budget.
+                    logging.error("Cannot start Spotify playback: %s", e)
+                    return None
+                # No token *yet* - typically the network is still coming up
+                # after a boot. Keep trying; this is what the budget is for.
+                logging.warning(
+                    "No Spotify token yet (attempt %d/%d): %s",
+                    attempt + 1, retries, e)
+                time.sleep(delay)
+                continue
             # Only ask whether it is ready if the transfer worked. When it
             # did not, the device is not there and is_ready() is a second HTTP
             # round trip to confirm what we already know - which was most of

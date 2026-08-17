@@ -670,3 +670,24 @@ def test_resume_failure_is_audible(monkeypatch):
             player.resume_playback()
 
     fake_utils.play_sound.assert_called_once_with("playback_error")
+
+def test_missing_token_is_transient_unless_credentials_were_rejected(monkeypatch):
+    """Distinguishes 'no network yet' from 'Spotify said no'"""
+    monkeypatch.setenv("SPOTIFY_DEVICE_ID", "test_device")
+    with patch.dict('sys.modules', {'utils': MagicMock()}):
+        from spotify import SpotifyPlayer, SpotifyAuthError
+        player = SpotifyPlayer("rfid123", None, "spotify:album:123")
+
+        # Never rejected, just could not fetch one: retryable.
+        player.auth_manager.rejected_at = 0
+        with patch.object(player.auth_manager, "get_token", return_value=None):
+            with pytest.raises(SpotifyAuthError) as caught:
+                player._get_headers()
+        assert caught.value.permanent is False
+
+        # Rejected by Spotify: permanent.
+        player.auth_manager.rejected_at = time.time()
+        with patch.object(player.auth_manager, "get_token", return_value=None):
+            with pytest.raises(SpotifyAuthError) as caught:
+                player._get_headers()
+        assert caught.value.permanent is True
