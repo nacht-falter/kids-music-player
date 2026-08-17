@@ -7,15 +7,20 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 import pytest
 from unittest.mock import MagicMock, patch
 
+import buttons
 from main import RFIDMusicPlayer
 
 
-@pytest.fixture
-def app():
+@pytest.fixture(params=[buttons.GpioButtonHandler, buttons.IrReceiver],
+                ids=["gpio", "ir"])
+def app(request):
     application = RFIDMusicPlayer()
     application.db = MagicMock()
     application.player_lock = threading.Lock()
-    application.button_handler = MagicMock()
+    # Specced against the real handlers: a bare MagicMock invents any attribute
+    # it is asked for, which hid a call to a method neither handler has until a
+    # card scan crashed the service on the device.
+    application.button_handler = MagicMock(spec=request.param)
     return application
 
 
@@ -67,7 +72,9 @@ def test_successful_scan_plays_and_makes_no_error_sound(app):
 
     assert _sounds(mock_utils) == ["confirm"]
     player.play.assert_called_once()
-    app.button_handler.set_player.assert_called_once_with(player)
+    # The handler is not handed the player; it reads the live one through the
+    # get_player callback it was constructed with.
+    assert app.player is player
 
 
 def test_last_played_recorded_even_when_playback_fails(app):

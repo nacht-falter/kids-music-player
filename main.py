@@ -244,8 +244,8 @@ class RFIDMusicPlayer:
                     finally:
                         if self.player:
                             self.player.play()
-                            if self.button_handler:
-                                self.button_handler.set_player(self.player)
+                            # No need to hand the player to the input handler:
+                            # it reads the live one through get_player().
                         else:
                             # create_player also returns None without raising,
                             # once it has exhausted its retries. That used to
