@@ -245,3 +245,26 @@ def test_create_player_still_retries_transient_failures(monkeypatch):
     with patch("utils.time.sleep") as mock_sleep:
         assert create_player(music_data, retries=3) is None
         assert mock_sleep.call_count == 3
+
+
+def test_handle_already_playing_refreshes_before_branching():
+    """A stale `playing` flag sent a dead device down the restart path"""
+    player = MagicMock()
+    player.playing = True
+    handle_already_playing(player)
+    player.check_playback_status.assert_called_once()
+
+
+def test_handle_already_playing_uses_refreshed_value():
+    """check_playback_status may flip `playing`; the branch must follow it"""
+    player = MagicMock()
+    player.playing = True
+
+    def refresh():
+        player.playing = False   # e.g. spotifyd died, device reports 204
+
+    player.check_playback_status.side_effect = refresh
+    handle_already_playing(player)
+
+    player.toggle_playback.assert_called_once()
+    player.restart_playback.assert_not_called()

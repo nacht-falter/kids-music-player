@@ -159,7 +159,12 @@ def get_last_played_rfid(db):
 
 
 def handle_already_playing(player):
-    """Handle already playing album"""
+    """Handle re-scanning the card that is already loaded"""
+    # Refresh before branching: the cached flag goes stale whenever something
+    # happens outside our control - spotifyd restarting, a phone taking the
+    # session - and acting on a stale True quietly does the wrong thing.
+    player.check_playback_status()
+
     if player.playing:
         logging.info("Already playing. Restarting playback.")
         player.restart_playback()

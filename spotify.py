@@ -376,6 +376,7 @@ class SpotifyPlayer:
             logging.info("Resumed playback on device %s", self.device_id)
         except requests.RequestException as e:
             self.handle_exception("Resuming playback failed", e)
+            utils.play_sound("playback_error")
 
     def pause_playback(self):
         if not self.playing:
@@ -459,6 +460,9 @@ class SpotifyPlayer:
             logging.info("Playback restarted from beginning")
         except requests.RequestException as e:
             self.handle_exception("Restart failed", e)
+            # Same as play(): a child who rescans a card and gets nothing has
+            # no way to tell a broken device from one that ignored them.
+            utils.play_sound("playback_error")
 
     def _persist_state(self, state):
         try:

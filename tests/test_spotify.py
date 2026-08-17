@@ -639,3 +639,34 @@ def test_token_age_tolerates_garbage_date(monkeypatch):
     import spotify
     monkeypatch.setenv("SPOTIFY_AUTH_DATE", "not-a-date")
     assert spotify.check_refresh_token_age() is None
+
+def test_restart_failure_is_audible(monkeypatch):
+    """Rescanning a card onto a dead device must not be silent"""
+    monkeypatch.setenv("SPOTIFY_DEVICE_ID", "test_device")
+    fake_utils = MagicMock()
+    with patch.dict('sys.modules', {'utils': MagicMock()}):
+        from spotify import SpotifyPlayer
+        player = SpotifyPlayer("rfid123", None, "spotify:album:123")
+
+        with patch.object(player.auth_manager, "get_token", return_value="tok"), \
+                patch("spotify.utils", fake_utils), \
+                patch('spotify.requests.put',
+                      side_effect=requests.RequestException("404")):
+            player.restart_playback()
+
+    fake_utils.play_sound.assert_called_once_with("playback_error")
+
+def test_resume_failure_is_audible(monkeypatch):
+    monkeypatch.setenv("SPOTIFY_DEVICE_ID", "test_device")
+    fake_utils = MagicMock()
+    with patch.dict('sys.modules', {'utils': MagicMock()}):
+        from spotify import SpotifyPlayer
+        player = SpotifyPlayer("rfid123", None, "spotify:album:123")
+
+        with patch.object(player.auth_manager, "get_token", return_value="tok"), \
+                patch("spotify.utils", fake_utils), \
+                patch('spotify.requests.put',
+                      side_effect=requests.RequestException("boom")):
+            player.resume_playback()
+
+    fake_utils.play_sound.assert_called_once_with("playback_error")
