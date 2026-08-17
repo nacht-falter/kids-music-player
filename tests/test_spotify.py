@@ -787,3 +787,43 @@ def test_device_is_playing_fails_closed(monkeypatch):
     # no device configured
     monkeypatch.delenv("SPOTIFY_DEVICE_ID", raising=False)
     assert spotify.device_is_playing() is False
+
+# --- previous-track behaviour ------------------------------------------------
+def test_previous_restarts_the_track_when_past_the_threshold(monkeypatch):
+    """What a CD player does, and what the bash version did"""
+    monkeypatch.setenv("SPOTIFY_DEVICE_ID", "test_device")
+    with patch.dict('sys.modules', {'utils': MagicMock()}):
+        from spotify import SpotifyPlayer
+        player = SpotifyPlayer("rfid123", None, "spotify:album:123")
+
+        status = _playback_status("test_device", "spotify:album:123")
+        status.json.return_value["progress_ms"] = 45000
+        status.json.return_value["item"] = {"uri": "spotify:track:x",
+                                            "track_number": 2}
+        with patch.object(player.auth_manager, "get_token", return_value="tok"), \
+                patch('spotify.requests.get', return_value=status), \
+                patch('spotify.requests.put') as mock_put, \
+                patch('spotify.requests.post') as mock_post:
+            player.previous_track()
+
+        mock_post.assert_not_called()          # did not skip back
+        assert "seek" in mock_put.call_args.args[0]
+        assert "position_ms=0" in mock_put.call_args.args[0]
+
+def test_previous_skips_back_near_the_start(monkeypatch):
+    monkeypatch.setenv("SPOTIFY_DEVICE_ID", "test_device")
+    with patch.dict('sys.modules', {'utils': MagicMock()}):
+        from spotify import SpotifyPlayer
+        player = SpotifyPlayer("rfid123", None, "spotify:album:123")
+
+        status = _playback_status("test_device", "spotify:album:123")
+        status.json.return_value["progress_ms"] = 1200      # under 3s
+        status.json.return_value["item"] = {"uri": "spotify:track:x",
+                                            "track_number": 2}
+        with patch.object(player.auth_manager, "get_token", return_value="tok"), \
+                patch('spotify.requests.get', return_value=status), \
+                patch('spotify.requests.post') as mock_post:
+            player.previous_track()
+
+        mock_post.assert_called_once()
+        assert "previous" in mock_post.call_args.args[0]

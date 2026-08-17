@@ -244,6 +244,10 @@ def get_auth_manager():
 
 
 class SpotifyPlayer:
+    # How far into a track "previous" stops meaning "the previous track" and
+    # starts meaning "this one again". 3s is what the bash version used.
+    RESTART_THRESHOLD_MS = 3000
+
     def __init__(self, rfid, playback_state, location):
         self.base_url = "https://api.spotify.com/v1"
         self.auth_manager = get_auth_manager()
@@ -486,9 +490,33 @@ class SpotifyPlayer:
         except requests.RequestException as e:
             self.handle_exception("Next track failed", e, audible=True)
 
+    def restart_track(self):
+        """Seek to the start of the current track"""
+        url = (f"{self.base_url}/me/player/seek"
+               f"?position_ms=0&device_id={self.device_id}")
+        try:
+            response = requests.put(url, headers=self._get_headers())
+            response.raise_for_status()
+            self.playing = True
+            logging.info("Restarted the current track")
+        except requests.RequestException as e:
+            self.handle_exception("Restarting the track failed", e, audible=True)
+
     def previous_track(self):
         if not self.ensure_owns_playback("going to the previous track"):
             return
+
+        # Past the first few seconds, "previous" restarts the current track
+        # rather than skipping back - what a CD player does, what the bash
+        # version did, and what stops a child losing their place by one press
+        # too many. ensure_owns_playback() just refreshed the position.
+        position_ms = self.playback_state.get("position_ms", 0)
+        if position_ms > self.RESTART_THRESHOLD_MS:
+            logging.info("%.1fs into the track, restarting it instead",
+                         position_ms / 1000)
+            self.restart_track()
+            return
+
         url = self._device_url("previous")
         try:
             response = requests.post(url, headers=self._get_headers())

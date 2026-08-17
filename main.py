@@ -127,8 +127,12 @@ class RFIDMusicPlayer:
                 self.player_lock,
                 self.reset_last_activity
             )
+        except ValueError as e:
+            # An unrecognised BUTTON_HANDLER is a configuration mistake, not a
+            # missing device: say so clearly rather than crashing at startup.
+            logging.error("%s. Set BUTTON_HANDLER to 'gpio' or 'ir'.", e)
         except (RuntimeError, FileNotFoundError) as e:
-            logging.warning(f"Input handler setup failed: {e}")
+            logging.warning("Input handler setup failed: %s", e)
 
         # Create rfid reader
         try:

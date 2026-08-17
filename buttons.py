@@ -1,7 +1,9 @@
 import logging
 import os
+import re
 import socket
 import sqlite3
+import subprocess
 import threading
 
 import utils
@@ -38,12 +40,20 @@ class PlayerActionHandler:
         self.shutdown_lock = threading.Lock()
         self.confirm_timer = None
 
+        # Detected once: the control does not change while we run, and probing
+        # on every keypress would add a subprocess to each one.
+        self.mixer_control = self._detect_mixer_control()
+        if self.mixer_control:
+            logging.info("Volume control: ALSA '%s'", self.mixer_control)
+
         # Map action names to handler methods
         self.action_map = {
             "shutdown": self._handle_shutdown,
             "toggle_playback": self._handle_toggle_playback,
             "next_track": self._handle_next_track,
             "previous_track": self._handle_previous_track,
+            "volume_up": self._handle_volume_up,
+            "volume_down": self._handle_volume_down,
         }
 
     def handle_action(self, action):
@@ -137,6 +147,92 @@ class PlayerActionHandler:
                     "Player is not initialized. Cannot skip to previous track.")
                 utils.play_sound("error")
 
+    # ALSA rather than Spotify Connect or mpc: it is the only layer that
+    # covers both sources and works while nothing is streaming.
+    #
+    # The control is detected, not hardcoded. Raspberry Pi OS has renamed it
+    # across releases - the bash version this replaces used "Headphone", which
+    # no longer exists on this hardware, so that script's volume had silently
+    # stopped working. MIXER_CONTROL in .env overrides the detection.
+    MIXER_CANDIDATES = ("PCM", "Headphone", "Master", "Speaker", "Digital")
+    VOLUME_STEP = 10
+    VOLUME_MAX = 90
+
+    def _detect_mixer_control(self):
+        """Pick a usable ALSA control, or None if there is none"""
+        configured = os.getenv("MIXER_CONTROL")
+        try:
+            listed = subprocess.run(["amixer", "scontrols"],
+                                    capture_output=True, text=True,
+                                    timeout=5).stdout
+        except (OSError, subprocess.SubprocessError) as e:
+            logging.error("Could not list ALSA controls: %s", e)
+            return None
+
+        available = re.findall(r"'([^']+)'", listed)
+        if configured:
+            if configured in available:
+                return configured
+            logging.warning(
+                "MIXER_CONTROL=%r is not among the available controls %s",
+                configured, available)
+
+        for name in self.MIXER_CANDIDATES:
+            if name in available:
+                return name
+
+        # Anything at all beats failing, since the names vary by device.
+        if available:
+            return available[0]
+
+        logging.error("No ALSA mixer controls found; volume keys will not work")
+        return None
+
+    def _current_volume(self):
+        """Current mixer volume as a percentage, or None if unreadable"""
+        if not self.mixer_control:
+            return None
+        try:
+            output = subprocess.run(
+                ["amixer", "-M", "get", self.mixer_control],
+                capture_output=True, text=True, timeout=5).stdout
+            match = re.search(r"\[(\d{1,3})%\]", output)
+            return int(match.group(1)) if match else None
+        except (OSError, subprocess.SubprocessError) as e:
+            logging.error("Could not read the volume: %s", e)
+            return None
+
+    def _set_volume(self, change):
+        """Nudge the mixer by `change` percent, clamped to VOLUME_MAX"""
+        current = self._current_volume()
+        if current is None:
+            utils.play_sound("error")
+            return
+
+        target = max(0, min(self.VOLUME_MAX, current + change))
+        if target == current:
+            # Already at an end stop; say so rather than doing nothing silently.
+            utils.play_sound("error")
+            return
+
+        try:
+            subprocess.run(
+                ["amixer", "-M", "-q", "set", self.mixer_control, f"{target}%"],
+                check=True, timeout=5)
+            logging.info("Volume %d%% -> %d%% (%s)",
+                         current, target, self.mixer_control)
+        except (OSError, subprocess.SubprocessError) as e:
+            logging.error("Could not set the volume: %s", e)
+            utils.play_sound("error")
+
+    def _handle_volume_up(self):
+        utils.play_sound("volume_up")
+        self._set_volume(+self.VOLUME_STEP)
+
+    def _handle_volume_down(self):
+        utils.play_sound("volume_down")
+        self._set_volume(-self.VOLUME_STEP)
+
     def _create_and_play_last_player(self):
         try:
             with sqlite3.connect(self.database_url) as db:
@@ -180,11 +276,8 @@ class GpioButtonHandler:
             get_player, set_player, database_url, player_lock, reset_last_activity
         )
 
-        gpio_pins = [3, 17, 27, 22]
-        self.gpio_map = map_actions(gpio_pins)
-
         self.buttons = []
-        for pin, action in self.gpio_map.items():
+        for pin, action in GPIO_ACTIONS.items():
             button = Button(pin)
             button.when_pressed = lambda a=action: self.action_handler.handle_action(
                 a)
@@ -195,51 +288,76 @@ class GpioButtonHandler:
 class IrReceiver:
     """Handles IR remote control input via LIRC."""
 
+    # Actions where holding the key should keep firing.
+    REPEATABLE_ACTIONS = {"volume_up", "volume_down"}
+
     def __init__(self, get_player, set_player, database_url, player_lock, reset_last_activity, socket_path='/var/run/lirc/lircd'):
         self.socket_path = socket_path
         self._running = False
         self._thread = None
+        self._stopping = threading.Event()
 
         self.action_handler = PlayerActionHandler(
             get_player, set_player, database_url, player_lock, reset_last_activity
         )
 
-        ir_keys = ['KEY_POWER', 'KEY_PAUSE', 'KEY_NEXT', 'KEY_PREVIOUS']
-        self.key_map = map_actions(ir_keys)
+        self.key_map = IR_ACTIONS
+
+    # How long to wait before reconnecting after the socket drops.
+    RECONNECT_DELAY = 5
 
     def _read_loop(self):
-        try:
-            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            sock.connect(self.socket_path)
-            sock_file = sock.makefile()
-        except Exception as e:
-            logging.error(f"Failed to connect to LIRC socket: {e}")
-            return
+        """Read IR frames, reconnecting if lircd goes away
 
-        logging.info("Listening for IR input...")
+        Reconnects rather than returning: the remote is this device's only
+        control besides the RFID reader, so a dropped socket must not silently
+        end IR input for the rest of the uptime.
+        """
         while self._running:
             try:
-                line = sock_file.readline()
-                if not line:
-                    continue
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+                    sock.connect(self.socket_path)
+                    logging.info("Listening for IR input...")
+                    self._consume(sock.makefile())
+            except OSError as e:
+                logging.error("LIRC socket error: %s", e)
 
-                parts = line.strip().split()
-                if len(parts) >= 3:
-                    key = parts[2]
-                    if key in self.key_map:
-                        action = self.key_map[key]
-                        logging.info(
-                            f"Received key: {key} -> action: {action}")
-                        self.action_handler.handle_action(action)
+            if self._running:
+                logging.info("Reconnecting to LIRC in %ds", self.RECONNECT_DELAY)
+                # Event.wait rather than sleep so stop() is not left waiting.
+                self._stopping.wait(self.RECONNECT_DELAY)
+
+    def _consume(self, sock_file):
+        """Dispatch frames until the socket closes"""
+        while self._running:
+            line = sock_file.readline()
+            if not line:
+                # readline() returns "" immediately and forever once the peer
+                # has closed. Continuing here span the CPU at 100%.
+                logging.warning("LIRC closed the connection")
+                return
+
+            # lircd sends "<code> <repeat> <key> <remote>", with repeat
+            # counting up while a key is held. Acting on every frame would
+            # skip a dozen tracks from one long press, so only the first
+            # counts - except volume, where holding to ramp is the point.
+            parts = line.strip().split()
+            if len(parts) < 3:
+                continue
+
+            repeat, key = parts[1], parts[2]
+            action = self.key_map.get(key)
+            if not action:
+                continue
+            if repeat != "00" and action not in self.REPEATABLE_ACTIONS:
+                continue
+
+            logging.info("Received key: %s -> action: %s", key, action)
+            try:
+                self.action_handler.handle_action(action)
             except Exception as e:
-                logging.error(f"Error reading from LIRC socket: {e}")
-                break
-
-        try:
-            sock_file.close()
-            sock.close()
-        except:
-            pass
+                # One failing action must not end IR input for good.
+                logging.exception("Action %s failed: %s", action, e)
 
     def start(self):
         if not os.path.exists(self.socket_path):
@@ -247,14 +365,19 @@ class IrReceiver:
                 f"LIRC socket not found at {self.socket_path}")
 
         self._running = True
+        self._stopping.clear()
         self._thread = threading.Thread(target=self._read_loop, daemon=True)
         self._thread.start()
         logging.info("IR receiver started")
 
     def stop(self):
         self._running = False
+        # Releases the reconnect wait, so stop() does not block for up to
+        # RECONNECT_DELAY. The blocking readline() is left to the daemon
+        # thread, which dies with the process.
+        self._stopping.set()
         if self._thread:
-            self._thread.join()
+            self._thread.join(timeout=self.RECONNECT_DELAY + 1)
         logging.info("IR receiver stopped")
 
 
@@ -267,9 +390,8 @@ def create_button_handler(handler_type, get_player, set_player, database_url, pl
         return GpioButtonHandler(get_player, set_player, database_url, player_lock, reset_last_activity)
 
     elif handler_type == "ir":
-        if not os.path.exists('/var/run/lirc/lircd'):
-            raise FileNotFoundError(
-                "LIRC socket not found at /var/run/lirc/lircd")
+        # start() checks the socket itself; duplicating the path here let the
+        # two drift apart.
         handler = IrReceiver(get_player, set_player,
                              database_url, player_lock, reset_last_activity)
         handler.start()
@@ -279,14 +401,28 @@ def create_button_handler(handler_type, get_player, set_player, database_url, pl
         raise ValueError(f"Unknown handler type: {handler_type}")
 
 
-def map_actions(values):
-    """
-    Given a list of values, returns a dict mapping each value
-    to the corresponding action by position.
-    """
-    actions = ["shutdown", "toggle_playback", "next_track", "previous_track", "volume_up", "volume_down"]
+# Which control triggers which action, per input device. Explicit rather than
+# positional: the two devices genuinely differ - toem2 has a hardware volume
+# pot so its GPIO handler needs no volume actions, while the IR remote has
+# volume buttons and no pot - and the remote sends two different keys that both
+# mean "toggle", which a positional mapping cannot express.
+GPIO_ACTIONS = {
+    3: "shutdown",
+    17: "toggle_playback",
+    27: "next_track",
+    22: "previous_track",
+}
 
-    if len(values) != len(actions):
-        raise ValueError(f"Expected {len(actions)} values, got {len(values)}")
-
-    return {value: action for value, action in zip(values, actions)}
+# Key names as the remote actually sends them, taken from the working lircrc of
+# the bash version this replaces. KEY_POWER was "stop" there, with a double
+# press to shut down; it is shutdown-with-confirmation here so both devices
+# behave the same way.
+IR_ACTIONS = {
+    "KEY_POWER": "shutdown",
+    "KEY_PLAY": "toggle_playback",
+    "KEY_PAUSE": "toggle_playback",
+    "KEY_NEXT": "next_track",
+    "KEY_PREVIOUS": "previous_track",
+    "KEY_VOLUMEUP": "volume_up",
+    "KEY_VOLUMEDOWN": "volume_down",
+}
