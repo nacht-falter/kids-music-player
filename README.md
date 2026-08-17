@@ -143,6 +143,11 @@ sudo systemctl --user start spotifyd
    URL instead; it has to match the authorize request byte for byte.
 
 #### Step 2: Get Your Refresh Token
+
+**This section is for first-time setup only.** Once a device has a working `.env`,
+use `reauth.py` instead (see below) — it does all of this for you and validates the
+result before writing anything.
+
 You can use this online helper tool to get a refresh token: [https://johannesbernet.com/spotify/auth](https://johannesbernet.com/spotify/auth)
 
 *Note: This tool is completely client-side - your credentials are not stored on the server.*
@@ -219,6 +224,24 @@ matters because a token issued to the wrong account authenticates perfectly and 
 with an empty device list and cards that silently do nothing.
 
 It backs up `.env`, records `SPOTIFY_AUTH_DATE`, and restarts the service.
+
+**You will still land on the callback page** — it is the registered `redirect_uri`, so
+every authorization ends there, including `reauth.py`'s. Ignore the `curl` command it
+offers and paste the code (or the whole address bar) back into `reauth.py`.
+
+Running that `curl` yourself would also produce a valid refresh token, but you would then
+be editing `.env` by hand and skipping the two checks that matter: that the token belongs
+to the account `spotifyd` is signed in as, and that the device appears in that account's
+device list. A token for the wrong account authenticates perfectly and fails only later,
+with an empty device list and cards that silently do nothing. You would also miss
+`SPOTIFY_AUTH_DATE`, which is what drives the expiry warning.
+
+#### Which flow do I need?
+
+| Situation | Use |
+|---|---|
+| New device, no `.env` yet | the helper page, then `setup_env.py` |
+| Existing device, token expired or revoked | `python reauth.py --host <ssh-host>` |
 
 ### 5. Get your Spotifyd device ID:
 

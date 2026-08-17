@@ -261,7 +261,14 @@ class PlayerActionHandler:
                     new_player = utils.create_player(music_data)
                     if new_player:
                         self.set_player(new_player)
-                        new_player.play()
+                        # Not play(): spotifyd outlives this process, so the
+                        # speaker may already be playing this very album with
+                        # the controller merely restarted underneath it. play()
+                        # would seek to the stored position, turning a pause
+                        # press into a jump to somewhere the child did not
+                        # expect. toggle_playback() looks first and pauses,
+                        # resumes or reclaims as the live state requires.
+                        new_player.toggle_playback()
                 except Exception:
                     logging.exception("Failed to create player.")
                     utils.play_sound("playback_error")

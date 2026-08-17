@@ -427,6 +427,7 @@ class SpotifyPlayer:
             response = requests.put(url, headers=self._get_headers(), json={})
             response.raise_for_status()
             self.playing = True
+            self.playback_started = True
             self.active_device = self.device_id
             logging.info("Resumed playback on device %s", self.device_id)
         except requests.RequestException as e:
@@ -440,6 +441,10 @@ class SpotifyPlayer:
             response = requests.put(url, headers=self._get_headers())
             response.raise_for_status()
             self.playing = False
+            # We have now driven this player's playback, so a later button
+            # press must toggle rather than start the album afresh at the
+            # stored position.
+            self.playback_started = True
             logging.info("Playback paused")
         except requests.RequestException as e:
             self.handle_exception("Pause failed", e, audible=True)

@@ -81,6 +81,72 @@ def test_other_button_cancels_the_arming(handler):
         mock_utils.shutdown.assert_not_called()
 
 
+# --- recovering a player after the controller restarted ----------------------
+
+class TestTogglingWithNoPlayer:
+    """spotifyd outlives this process, so audio can be playing with no player
+
+    Restarting the service (a crash, a deploy, a manual restart) drops the
+    in-memory player, but the Spotify Connect session in spotifyd keeps
+    streaming. The next button press has to cope with a speaker that is
+    already playing.
+    """
+
+    def _press_with_last_played(self, handler, player):
+        with patch("buttons.utils") as mock_utils, patch("buttons.led", None):
+            mock_utils.get_last_played_rfid.return_value = "abc"
+            mock_utils.get_music_data.return_value = {"rfid": "abc"}
+            mock_utils.create_player.return_value = player
+            handler.handle_action("toggle_playback")
+        return mock_utils
+
+    def test_does_not_seek_when_the_speaker_is_already_playing(self, handler):
+        """A pause press must not become a jump to the stored position
+
+        play() PUTs context_uri plus the stored position unconditionally, so
+        using it here restarted the story somewhere the child did not expect.
+        """
+        player = MagicMock()
+        self._press_with_last_played(handler, player)
+
+        player.play.assert_not_called()
+        player.toggle_playback.assert_called_once()
+
+    def test_the_new_player_is_kept(self, handler):
+        player = MagicMock()
+        self._press_with_last_played(handler, player)
+        handler.set_player.assert_called_once_with(player)
+
+    def test_missing_last_played_is_audible(self, handler):
+        with patch("buttons.utils") as mock_utils, patch("buttons.led", None):
+            mock_utils.get_music_data.return_value = None
+            handler.handle_action("toggle_playback")
+
+        mock_utils.create_player.assert_not_called()
+        assert "error" in [c.args[0]
+                           for c in mock_utils.play_sound.call_args_list]
+
+    def test_a_second_press_toggles_rather_than_restarting(self, handler):
+        """playback_started gates toggle-vs-start on the following press
+
+        It used to be set only by play(); adopting playback left it False, so
+        the next press fell through to play() and seeked after all.
+        """
+        import spotify
+        player = spotify.SpotifyPlayer.__new__(spotify.SpotifyPlayer)
+        player.playing = True
+        player.playback_started = False
+        player.device_id = "dev1"
+
+        with patch.object(player, "_device_url", return_value="http://x"), \
+                patch.object(player, "_get_headers", return_value={}), \
+                patch("spotify.requests.put", return_value=MagicMock(
+                    raise_for_status=MagicMock(return_value=None))):
+            player.pause_playback()
+
+        assert player.playback_started is True
+
+
 # --- volume (IR only; toem2 has a hardware pot) ------------------------------
 
 def _scontrols(*names):
