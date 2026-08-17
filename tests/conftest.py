@@ -24,6 +24,11 @@ def spotify_env(monkeypatch):
     Tests that exercise SpotifyAuthManager itself construct it directly and are
     unaffected by the singleton.
     """
+    # A real .env leaking in (some modules call load_dotenv) would otherwise
+    # decide which branch utils.shutdown() takes, and the os._exit() branch
+    # terminates the test runner silently with exit code 0.
+    monkeypatch.delenv("DEVELOPMENT", raising=False)
+
     monkeypatch.setenv("SPOTIFY_USERCREDS", "test_creds")
     monkeypatch.setenv("SPOTIFY_REFRESH_TOKEN", "test_token")
     monkeypatch.setenv("SPOTIFY_DEVICE_ID", "test_device")

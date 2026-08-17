@@ -143,6 +143,8 @@ def test_handle_already_playing_toggle():
     player.restart_playback.assert_not_called()
 
 def test_shutdown_calls(monkeypatch):
+    # Explicit: this asserts the production branch, so DEVELOPMENT must be off.
+    monkeypatch.delenv("DEVELOPMENT", raising=False)
     player = MagicMock()
     sync_done = MagicMock()
     sync_done.is_set.return_value = True
