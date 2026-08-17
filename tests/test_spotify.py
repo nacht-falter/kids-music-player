@@ -727,3 +727,63 @@ def test_unexpected_failures_keep_their_traceback(monkeypatch, caplog):
 
     assert len(caplog.records) == 1
     assert caplog.records[0].exc_info is not None
+
+# --- playback check independent of any player ---
+def _player_response(device_id, is_playing, status=200):
+    r = MagicMock()
+    r.status_code = status
+    r.raise_for_status.return_value = None
+    r.json.return_value = {"device": {"id": device_id}, "is_playing": is_playing}
+    return r
+
+def test_device_is_playing_true_for_our_device(monkeypatch):
+    monkeypatch.setenv("SPOTIFY_DEVICE_ID", "ours")
+    import spotify
+    with patch.object(spotify, "get_auth_manager") as am, \
+            patch("spotify.requests.get", return_value=_player_response("ours", True)):
+        am.return_value.get_token.return_value = "tok"
+        assert spotify.device_is_playing() is True
+
+def test_device_is_playing_false_when_another_device_plays(monkeypatch):
+    """A phone playing to itself must not keep our speaker awake"""
+    monkeypatch.setenv("SPOTIFY_DEVICE_ID", "ours")
+    import spotify
+    with patch.object(spotify, "get_auth_manager") as am, \
+            patch("spotify.requests.get", return_value=_player_response("phone", True)):
+        am.return_value.get_token.return_value = "tok"
+        assert spotify.device_is_playing() is False
+
+def test_device_is_playing_false_when_paused(monkeypatch):
+    monkeypatch.setenv("SPOTIFY_DEVICE_ID", "ours")
+    import spotify
+    with patch.object(spotify, "get_auth_manager") as am, \
+            patch("spotify.requests.get", return_value=_player_response("ours", False)):
+        am.return_value.get_token.return_value = "tok"
+        assert spotify.device_is_playing() is False
+
+def test_device_is_playing_fails_closed(monkeypatch):
+    """Any doubt must not pin the device awake - it runs on a battery"""
+    monkeypatch.setenv("SPOTIFY_DEVICE_ID", "ours")
+    import spotify
+
+    # 204: nothing playing anywhere
+    with patch.object(spotify, "get_auth_manager") as am, \
+            patch("spotify.requests.get", return_value=MagicMock(status_code=204)):
+        am.return_value.get_token.return_value = "tok"
+        assert spotify.device_is_playing() is False
+
+    # network error
+    with patch.object(spotify, "get_auth_manager") as am, \
+            patch("spotify.requests.get",
+                  side_effect=requests.RequestException("down")):
+        am.return_value.get_token.return_value = "tok"
+        assert spotify.device_is_playing() is False
+
+    # no token
+    with patch.object(spotify, "get_auth_manager") as am:
+        am.return_value.get_token.return_value = None
+        assert spotify.device_is_playing() is False
+
+    # no device configured
+    monkeypatch.delenv("SPOTIFY_DEVICE_ID", raising=False)
+    assert spotify.device_is_playing() is False

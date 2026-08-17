@@ -142,40 +142,57 @@ class RFIDMusicPlayer:
             self.last_activity = time.monotonic()
             logging.debug("Last activity reset at %.0f", self.last_activity)
 
+    def check_idle(self, now):
+        """Shut down if nothing has happened for idle_time. True if it did."""
+        with self.activity_lock:
+            inactive_for = now - self.last_activity
+
+        if inactive_for > self.idle_time:
+            logging.info(
+                "Watchdog: system has been idle for %.0f seconds", inactive_for)
+            utils.shutdown(self.player)
+            return True
+        return False
+
+    def record_playback_activity(self):
+        """Record the current position, and treat playback as activity
+
+        Only scans and button presses reset the idle timer, so without this a
+        story longer than idle_time was cut off mid-way, and audio pushed to
+        the device from a phone was invisible entirely.
+        """
+        with self.player_lock:
+            player = self.player
+            if player:
+                # Bounds how far a reclaim can rewind: once another device
+                # takes the session, our position is no longer visible.
+                player.refresh_playback_state()
+
+        if player:
+            # check_playback_status(), which the refresh just ran, sets
+            # `playing` only when this device is the active one - so this
+            # covers a scanned card and anything pushed to us alike.
+            playing = player.playing
+        else:
+            # No card scanned since boot, so no player to ask. Check the device
+            # directly, or audio streamed to the speaker would be ignored.
+            # Costs one request per interval, and only while idle and cardless.
+            playing = spotify.device_is_playing()
+
+        if playing:
+            self.reset_last_activity()
+
     def start_watchdog(self):
         """Start the idle watchdog timer."""
         def watchdog_loop():
             last_state_refresh = time.monotonic()
             while True:
-                with self.activity_lock:
-                    inactive_for = time.monotonic() - self.last_activity
-                if inactive_for > self.idle_time:
-                    logging.info(
-                        "Watchdog: system has been idle for %.0f seconds",
-                        inactive_for
-                    )
-                    utils.shutdown(self.player)
-
                 now = time.monotonic()
+                self.check_idle(now)
+
                 if now - last_state_refresh >= self.STATE_REFRESH_INTERVAL:
                     last_state_refresh = now
-                    with self.player_lock:
-                        if self.player:
-                            # Bounds how far a reclaim can rewind: once another
-                            # device takes the session, our position is no
-                            # longer visible.
-                            self.player.refresh_playback_state()
-
-                            # Playing counts as activity. Only scans and button
-                            # presses did before, so a story longer than
-                            # IDLE_TIME was cut off mid-way if nobody touched
-                            # anything - and playback started from a phone was
-                            # invisible entirely. check_playback_status(), which
-                            # the refresh above just ran, sets `playing` only
-                            # when this device is the active one, so it covers
-                            # both a scanned card and anything pushed to us.
-                            if self.player.playing:
-                                self.reset_last_activity()
+                    self.record_playback_activity()
 
                 time.sleep(1)
 

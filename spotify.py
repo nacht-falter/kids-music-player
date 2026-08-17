@@ -196,6 +196,43 @@ def check_refresh_token_age():
     return days_left
 
 
+
+def device_is_playing():
+    """Whether our configured Spotify device is currently playing anything
+
+    Deliberately independent of any SpotifyPlayer. The idle watchdog needs to
+    know the speaker is in use even when no card has been scanned since boot -
+    audio pushed to it from a phone, say - and in that state there is no player
+    object to ask.
+
+    Returns False on any doubt (no token, no device configured, network error):
+    the caller uses this to *prevent* an idle shutdown, so failing closed keeps
+    the battery-saving behaviour rather than pinning the device awake.
+    """
+    device_id = os.environ.get("SPOTIFY_DEVICE_ID")
+    if not device_id:
+        return False
+
+    try:
+        token = get_auth_manager().get_token()
+        if not token:
+            return False
+
+        response = requests.get(
+            "https://api.spotify.com/v1/me/player",
+            headers={"Authorization": "Bearer " + token})
+        if response.status_code == 204:
+            return False
+        response.raise_for_status()
+
+        playback = response.json()
+        return ((playback.get("device") or {}).get("id") == device_id
+                and bool(playback.get("is_playing")))
+    except (requests.RequestException, ValueError) as e:
+        logging.debug("Could not check whether the device is playing: %s", e)
+        return False
+
+
 _auth_manager = None
 
 
