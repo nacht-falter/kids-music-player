@@ -180,16 +180,30 @@ def register_rfid(api_url, headers):
         "title": title
     }
 
+    print("\nAbout to register:")
+    print(f"      card:     {rfid}")
+    print(f"      title:    {title}")
+    print(f"      source:   {source}")
+    print(f"      location: {location}")
+    if input("Save this? [Y/n]: ").strip().lower() in ("n", "no"):
+        print("Cancelled, nothing was saved.")
+        return
+
     if submit_rfid_data(api_url, headers, item):
         print(f"✓ RFID {rfid} successfully registered!")
-        print("  Devices poll for changes every 15 minutes. To use the card "
-              "now: ssh <device> 'sudo systemctl restart toem'")
+        print("  Devices pick this up within a minute.")
     else:
         print("✗ Failed to register RFID")
 
 
 def get_rfid_input():
-    """Get and validate RFID input."""
+    """Get and validate the card number
+
+    The reader is a USB HID device: it types the digits and sends Enter, so
+    scanning a card straight into this prompt fills it in and submits. Nothing
+    here talks to the player - registration works with it switched off.
+    """
+    print("\nScan the card here, or type its number.")
     while True:
         rfid = input("Enter RFID (or 'q' to quit): ").strip()
         if rfid.lower() == 'q':
@@ -208,7 +222,11 @@ def handle_existing_rfid(api_url, headers, rfid):
     try:
         response = requests.get(f"{api_url}/music/{rfid}", headers=headers)
         if response.status_code == 200:
-            print(f"⚠️  RFID {rfid} already exists.")
+            existing = response.json()
+            print(f"\n⚠️  RFID {rfid} is already registered:")
+            print(f"      title:    {existing.get('title')}")
+            print(f"      source:   {existing.get('source')}")
+            print(f"      location: {existing.get('location')}")
             while True:
                 overwrite = input(
                     "Overwrite existing entry? [y/N]: ").strip().lower()

@@ -106,3 +106,22 @@ def test_previous_player_state_saved_before_switching(app):
 
     previous.pause_playback.assert_called_once()
     previous.save_playback_state.assert_called_once()
+
+
+def test_sync_is_scheduled_not_run_once(app, monkeypatch):
+    """sync_db runs once; a new card then waits for a service restart"""
+    monkeypatch.setenv("ENABLE_SYNC", "true")
+    app.database_url = "/tmp/x.db"
+
+    with patch("main.schedule_sync") as mock_schedule:
+        app.setup_sync()
+
+    mock_schedule.assert_called_once()
+    assert mock_schedule.call_args.kwargs["interval"] == app.SYNC_INTERVAL
+
+
+def test_sync_not_scheduled_when_disabled(app, monkeypatch):
+    monkeypatch.setenv("ENABLE_SYNC", "false")
+    with patch("main.schedule_sync") as mock_schedule:
+        app.setup_sync()
+    mock_schedule.assert_not_called()

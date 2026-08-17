@@ -11,7 +11,7 @@ import db_setup
 import spotify
 import utils
 from buttons import ButtonHandler
-from remote_sync import sync_db
+from remote_sync import schedule_sync
 from rfid import RfidReader
 
 try:
@@ -27,6 +27,11 @@ class RFIDMusicPlayer:
     # the worst case a reclaim can rewind by, so it trades API calls against
     # how far back a story jumps when another device interrupts it.
     STATE_REFRESH_INTERVAL = 30
+
+    # How often to pull newly registered cards from the sync API. Each poll is
+    # a fresh TLS connection (remote_sync uses no Session), so this trades
+    # against keeping the wifi radio out of power save on a battery device.
+    SYNC_INTERVAL = 60
 
     def __init__(self):
         self.player = None
@@ -96,13 +101,15 @@ class RFIDMusicPlayer:
         sync_enabled = os.environ.get("ENABLE_SYNC", "").lower() == "true"
 
         if sync_enabled:
-            sync_thread = threading.Thread(
-                target=sync_db,
-                args=(self.database_url, self.sync_done),
-                daemon=True
-            )
-            sync_thread.start()
-            logging.info("Database sync enabled")
+            # schedule_sync runs its own thread and repeats. This used to
+            # call sync_db directly, which syncs exactly once - so a newly
+            # registered card only appeared after a service restart, and with
+            # idle-shutdown that meant the next time someone switched the
+            # device on.
+            schedule_sync(self.database_url, self.sync_done,
+                          interval=self.SYNC_INTERVAL)
+            logging.info("Database sync enabled (polling every %ds)",
+                         self.SYNC_INTERVAL)
         else:
             logging.info("Sync disabled.")
 
