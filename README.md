@@ -250,10 +250,22 @@ SPOTIFY_DEVICE_ID=kids-music-player
 DATABASE_URL=/path/to/db
 RFID_READER=rfid_device_name
 
+# Written by reauth.py; used to warn before the 6-month expiry.
+# Absent means "unknown", never "expired".
+# SPOTIFY_AUTH_DATE=2026-08-16
+
 # Optional settings:
 # APP_NAME=your_app_name
-# DEVELOPMENT=true
 # IDLE_TIME=3600
+
+# DEVELOPMENT changes two unrelated things, so it is worth being deliberate:
+#   - logging drops from DEBUG to INFO when false
+#   - the idle watchdog and the shutdown button run `sudo shutdown -h now`
+#     when false, but merely exit the process when true
+# With `Restart=on-failure`, that clean exit is not a failure, so the service
+# stays stopped while the Pi keeps running - the device looks powered on but
+# ignores every card. Leave it false on a real device.
+# DEVELOPMENT=true
 ```
 
 ### 8. Run the Player
@@ -284,6 +296,10 @@ User=pi
 [Install]
 WantedBy=default.target
 ```
+
+Note the shutdown button and the idle watchdog run `sudo shutdown -h now`. Under
+`User=pi` that needs passwordless sudo for the shutdown command; running the unit as root
+avoids it.
 
 Enable and start:
 
@@ -365,15 +381,30 @@ sudo journalctl -u kids-music-player -f
 Place music in MPD music folder and run `mpc update`
 
 ### Spotify Content
-To get Spotify URIs for playlists/albums:
 
-1. Open Spotify desktop app or web player
-2. Click on any playlist, album, or track
-3. Select "Share" → "Copy Spotify URI"
-4. You'll get something like: `spotify:playlist:37i9dQZF1DXcBWIGoYBM5M`
+Both registration tools search Spotify directly, so URIs rarely need copying. If you do
+want one — Spotify app → Share → Copy Spotify URI — it looks like
+`spotify:album:1chTWZhEdZvGu8sMVuZt2W`, and both tools also accept the
+`https://open.spotify.com/album/...` link that "Copy link" gives you.
 
 ### Register RFID Cards
-Map RFID cards to music by running:
+
+**From a browser (including a phone):** <https://johannesbernet.com/toem/register>
+
+Sign in, type or scan the card number, search for an album and save. Nothing is copied by
+hand and the player does not need to be switched on — it picks new cards up within a
+minute of being on.
+
+**From the terminal:**
 ```bash
-python3 register.py
+python3 register_rfid.py
 ```
+
+Same idea: `(a)dd`, `(d)elete`, `(l)ist`. Search by album name and the URI and title fill
+themselves in; pasted `open.spotify.com` links work too.
+
+Card numbers are stored zero-padded to ten digits, but both tools accept the number as
+printed on the card and pad it, so `1221753` finds `0001221753`.
+
+The RFID reader is a USB HID device: it types the digits and sends Enter, so scanning a
+card straight into either prompt fills it in and moves on.
