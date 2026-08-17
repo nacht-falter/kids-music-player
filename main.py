@@ -7,10 +7,10 @@ import time
 
 from dotenv import load_dotenv
 
+import buttons
 import db_setup
 import spotify
 import utils
-from buttons import ButtonHandler
 from remote_sync import schedule_sync
 from rfid import RfidReader
 
@@ -115,18 +115,26 @@ class RFIDMusicPlayer:
 
     def setup_hardware(self):
         """Setup hardware components (buttons, RFID reader)."""
+        handler_type = os.getenv("BUTTON_HANDLER", "gpio")
+
+        # Create button handler
         try:
-            self.button_handler = ButtonHandler(
+            self.button_handler = buttons.create_button_handler(
+                handler_type,
                 self.get_player,
                 self.set_player,
                 self.database_url,
                 self.player_lock,
                 self.reset_last_activity
             )
-        except RuntimeError as e:
-            logging.warning(e)
+        except (RuntimeError, FileNotFoundError) as e:
+            logging.warning(f"Input handler setup failed: {e}")
 
-        self.rfid_reader = RfidReader()
+        # Create rfid reader
+        try:
+            self.rfid_reader = RfidReader()
+        except (ValueError, FileNotFoundError) as e:
+            logging.error(f"Failed to initialize RFID reader: {e}")
 
     def get_player(self):
         """Get the current player instance."""
