@@ -271,3 +271,33 @@ def test_start_refuses_without_a_socket(monkeypatch, tmp_path):
             socket_path=str(tmp_path / "absent"))
     with pytest.raises(FileNotFoundError):
         r.start()
+
+
+def test_volume_up_at_full_refuses_rather_than_clamping():
+    """spotifyd sets initial_volume=100, above VOLUME_MAX
+
+    Clamping there turned a volume-up press into a volume *cut*.
+    """
+    import buttons
+    h = buttons.PlayerActionHandler.__new__(buttons.PlayerActionHandler)
+    h.mixer_control = "PCM"
+    h._current_volume = lambda: 100
+
+    with patch("buttons.subprocess.run") as run, patch("buttons.utils") as u:
+        h._set_volume(+10)
+
+    run.assert_not_called()
+    u.play_sound.assert_called_once_with("error")
+
+
+def test_volume_down_at_zero_refuses():
+    import buttons
+    h = buttons.PlayerActionHandler.__new__(buttons.PlayerActionHandler)
+    h.mixer_control = "PCM"
+    h._current_volume = lambda: 0
+
+    with patch("buttons.subprocess.run") as run, patch("buttons.utils") as u:
+        h._set_volume(-10)
+
+    run.assert_not_called()
+    u.play_sound.assert_called_once_with("error")

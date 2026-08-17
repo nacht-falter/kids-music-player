@@ -209,9 +209,18 @@ class PlayerActionHandler:
             utils.play_sound("error")
             return
 
+        # Refuse rather than clamp when already past an end stop. Clamping was
+        # worse than doing nothing: spotifyd sets initial_volume to 100, so a
+        # volume-*up* press at 100% would have pulled it down to VOLUME_MAX.
+        if change > 0 and current >= self.VOLUME_MAX:
+            utils.play_sound("error")
+            return
+        if change < 0 and current <= 0:
+            utils.play_sound("error")
+            return
+
         target = max(0, min(self.VOLUME_MAX, current + change))
         if target == current:
-            # Already at an end stop; say so rather than doing nothing silently.
             utils.play_sound("error")
             return
 
