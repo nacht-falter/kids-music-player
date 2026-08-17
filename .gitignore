@@ -1,4 +1,9 @@
-*env*
+# Secrets. Deliberately precise: this was `*env*`, which also swallowed
+# setup_env.py - the script the README recommends as the primary setup route,
+# which consequently was never committed and never reached either device.
+.env
+.env.*
+*.env
 /venv
 /__pycache__
 *.db
