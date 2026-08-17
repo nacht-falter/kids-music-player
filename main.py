@@ -8,6 +8,7 @@ import time
 from dotenv import load_dotenv
 
 import db_setup
+import spotify
 import utils
 from buttons import ButtonHandler
 from remote_sync import sync_db
@@ -68,6 +69,10 @@ class RFIDMusicPlayer:
 
         idle_time_env = os.environ.get("IDLE_TIME")
         self.idle_time = int(idle_time_env) if idle_time_env else 3600
+
+        # Surface an approaching refresh-token expiry while it is still
+        # cheap to fix, rather than when playback stops.
+        spotify.check_refresh_token_age()
 
         return True
 

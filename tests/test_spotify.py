@@ -588,3 +588,54 @@ def test_missing_track_falls_back_to_zero(monkeypatch):
         with patch.object(p.auth_manager, "get_token", return_value="tok"), \
                 patch('spotify.requests.get', return_value=_page([])):
             assert p._get_track_position_in_playlist("abc", "nope") == 0
+
+# --- refresh token expiry warning ---
+def test_token_age_unknown_without_auth_date(monkeypatch, caplog):
+    """A missing date is unknown, never treated as expired"""
+    monkeypatch.delenv("SPOTIFY_AUTH_DATE", raising=False)
+    import spotify
+    assert spotify.check_refresh_token_age() is None
+
+def test_token_age_warns_inside_window(monkeypatch, caplog):
+    import datetime
+    import spotify
+    issued = datetime.date.today() - datetime.timedelta(
+        days=spotify.REFRESH_TOKEN_LIFETIME_DAYS - 10)
+    monkeypatch.setenv("SPOTIFY_AUTH_DATE", issued.isoformat())
+
+    with caplog.at_level("WARNING"):
+        days = spotify.check_refresh_token_age()
+
+    assert days == 10
+    assert "expires in about 10 day" in caplog.text
+    assert "reauth.py" in caplog.text
+
+def test_token_age_errors_once_past_expiry(monkeypatch, caplog):
+    import datetime
+    import spotify
+    issued = datetime.date.today() - datetime.timedelta(
+        days=spotify.REFRESH_TOKEN_LIFETIME_DAYS + 5)
+    monkeypatch.setenv("SPOTIFY_AUTH_DATE", issued.isoformat())
+
+    with caplog.at_level("ERROR"):
+        days = spotify.check_refresh_token_age()
+
+    assert days == -5
+    assert "past its expected lifetime" in caplog.text
+
+def test_token_age_quiet_when_plenty_left(monkeypatch, caplog):
+    import datetime
+    import spotify
+    issued = datetime.date.today() - datetime.timedelta(days=1)
+    monkeypatch.setenv("SPOTIFY_AUTH_DATE", issued.isoformat())
+
+    with caplog.at_level("WARNING"):
+        days = spotify.check_refresh_token_age()
+
+    assert days == spotify.REFRESH_TOKEN_LIFETIME_DAYS - 1
+    assert caplog.text == ""   # no nagging months in advance
+
+def test_token_age_tolerates_garbage_date(monkeypatch):
+    import spotify
+    monkeypatch.setenv("SPOTIFY_AUTH_DATE", "not-a-date")
+    assert spotify.check_refresh_token_age() is None

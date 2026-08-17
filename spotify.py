@@ -1,3 +1,4 @@
+import datetime
 import json
 import logging
 import os
@@ -132,6 +133,56 @@ class SpotifyAuthManager:
         if isinstance(error, dict):
             error = error.get("message")
         return error in ("invalid_grant", "invalid_client")
+
+
+# Spotify expires refresh tokens roughly six months after authorization.
+REFRESH_TOKEN_LIFETIME_DAYS = 183
+EXPIRY_WARNING_DAYS = 30
+
+
+def check_refresh_token_age():
+    """Warn before the refresh token expires, rather than discovering it after
+
+    Spotify never reports when a token was issued, so this depends on
+    SPOTIFY_AUTH_DATE, which reauth.py records. Installs predating that have no
+    value to check; unknown is treated as unknown, not as expired.
+
+    Deliberately log-only, with no sound: the warning window is a month long,
+    and a device that chirped at every startup for a month would just teach
+    everyone to ignore it. Actual failure is already audible via the existing
+    playback_error path.
+
+    Returns days remaining, or None when it cannot be determined.
+    """
+    raw = os.environ.get("SPOTIFY_AUTH_DATE", "").strip()
+    if not raw:
+        logging.debug(
+            "SPOTIFY_AUTH_DATE is not set, so refresh token age is unknown. "
+            "It gets recorded by reauth.py on the next re-authorization.")
+        return None
+
+    try:
+        issued = datetime.date.fromisoformat(raw)
+    except ValueError:
+        logging.warning("SPOTIFY_AUTH_DATE is not an ISO date: %r", raw)
+        return None
+
+    days_left = REFRESH_TOKEN_LIFETIME_DAYS - (datetime.date.today() - issued).days
+
+    if days_left <= 0:
+        logging.error(
+            "Spotify refresh token is %d day(s) past its expected lifetime "
+            "(authorized %s). Playback will fail with invalid_grant. "
+            "Run: python reauth.py --host <device>", -days_left, issued)
+    elif days_left <= EXPIRY_WARNING_DAYS:
+        logging.warning(
+            "Spotify refresh token expires in about %d day(s) (authorized "
+            "%s). Run: python reauth.py --host <device>", days_left, issued)
+    else:
+        logging.debug(
+            "Spotify refresh token has about %d day(s) left", days_left)
+
+    return days_left
 
 
 _auth_manager = None
