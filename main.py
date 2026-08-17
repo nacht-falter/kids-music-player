@@ -22,6 +22,11 @@ except ImportError:
 class RFIDMusicPlayer:
     """Main application class for the RFID Music Player."""
 
+    # How often to record the current playback position, in seconds. This is
+    # the worst case a reclaim can rewind by, so it trades API calls against
+    # how far back a story jumps when another device interrupts it.
+    STATE_REFRESH_INTERVAL = 30
+
     def __init__(self):
         self.player = None
         self.player_lock = threading.Lock()
@@ -128,6 +133,7 @@ class RFIDMusicPlayer:
     def start_watchdog(self):
         """Start the idle watchdog timer."""
         def watchdog_loop():
+            last_state_refresh = time.monotonic()
             while True:
                 with self.activity_lock:
                     inactive_for = time.monotonic() - self.last_activity
@@ -137,6 +143,16 @@ class RFIDMusicPlayer:
                         inactive_for
                     )
                     utils.shutdown(self.player)
+
+                now = time.monotonic()
+                if now - last_state_refresh >= self.STATE_REFRESH_INTERVAL:
+                    last_state_refresh = now
+                    # Bounds how far a reclaim can rewind: once another device
+                    # takes the session, our position is no longer visible.
+                    with self.player_lock:
+                        if self.player:
+                            self.player.refresh_playback_state()
+
                 time.sleep(1)
 
         threading.Thread(target=watchdog_loop, daemon=True).start()

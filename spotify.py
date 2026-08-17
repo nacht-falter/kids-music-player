@@ -131,6 +131,52 @@ class SpotifyPlayer:
         context_uri = (playback.get("context") or {}).get("uri")
         return device_id == self.device_id and context_uri == self.location
 
+    def _state_from_playback(self, playback):
+        """Cheap position snapshot taken from a playback payload
+
+        Unlike save_playback_state() this never resolves playlist positions,
+        which would cost an extra API call every time it runs. For playlist
+        contexts the last known offset is kept and only the elapsed time is
+        updated; save_playback_state() resolves those properly.
+        """
+        item = playback.get("item") or {}
+        context_uri = (playback.get("context") or {}).get("uri")
+        context_parts = context_uri.split(":") if context_uri else []
+
+        if len(context_parts) == 3 and context_parts[1] == "album":
+            offset_position = max(0, item.get("track_number", 1) - 1)
+        else:
+            offset_position = (
+                self.playback_state.get("offset") or {}).get("position", 0)
+
+        return {
+            "offset": {"position": offset_position},
+            "position_ms": playback.get("progress_ms", 0),
+        }
+
+    def refresh_playback_state(self):
+        """Record where our album has got to, while we can still see it
+
+        Called periodically during playback. Without it self.playback_state
+        only ever changes on a card switch or shutdown, so reclaiming after
+        another device interrupts us would rewind to that stale position.
+        Once the interrupting device holds the session our position is gone
+        from Spotify, so it has to be captured beforehand.
+        """
+        playback = self.check_playback_status()
+        if not self.owns_playback(playback):
+            return False
+
+        try:
+            utils.persist_playback_state(self.rfid, self.playback_state)
+            logging.debug(
+                "Refreshed playback state for RFID %s: %s",
+                self.rfid, self.playback_state)
+            return True
+        except (sqlite3.DatabaseError, ValueError) as e:
+            self.handle_exception("Refreshing playback state failed", e)
+            return False
+
     def check_playback_status(self):
         try:
             response = requests.get(
@@ -146,6 +192,11 @@ class SpotifyPlayer:
             self.active_device = device_id
             self.playing = (device_id == self.device_id) and playback.get(
                 "is_playing")
+            # Free position update: we already have the payload, and every
+            # observation of our own playback is one more chance to record
+            # where the story actually is.
+            if self.owns_playback(playback):
+                self.playback_state = self._state_from_playback(playback)
             return playback
         except requests.RequestException as e:
             self.handle_exception("Playback status check failed", e)

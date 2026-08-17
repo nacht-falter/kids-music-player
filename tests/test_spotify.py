@@ -339,3 +339,52 @@ def test_get_auth_manager_singleton(monkeypatch):
         auth1 = get_auth_manager()
         auth2 = get_auth_manager()
         assert auth1 is auth2 
+def test_spotify_player_tracks_position_while_playing(monkeypatch):
+    """Observing our own playback updates the in-memory position"""
+    monkeypatch.setenv("SPOTIFY_DEVICE_ID", "test_device")
+
+    with patch.dict('sys.modules', {'utils': MagicMock()}):
+        from spotify import SpotifyPlayer
+        stale = '{"offset": {"position": 1}, "position_ms": 48360}'
+        player = SpotifyPlayer("rfid123", stale, "spotify:album:123")
+
+        status = _playback_status("test_device", "spotify:album:123")
+        status.json.return_value["progress_ms"] = 90000
+        status.json.return_value["item"] = {"uri": "spotify:track:x",
+                                            "track_number": 2}
+        with patch.object(player.auth_manager, "get_token", return_value="tok"), \
+                patch('spotify.requests.get', return_value=status):
+            player.check_playback_status()
+
+        assert player.playback_state == {
+            "offset": {"position": 1}, "position_ms": 90000}
+
+def test_spotify_player_reclaim_uses_fresh_position(monkeypatch):
+    """A reclaim must not rewind to the position stored at card scan"""
+    monkeypatch.setenv("SPOTIFY_DEVICE_ID", "test_device")
+
+    with patch.dict('sys.modules', {'utils': MagicMock()}):
+        from spotify import SpotifyPlayer
+        stale = '{"offset": {"position": 1}, "position_ms": 48360}'
+        player = SpotifyPlayer("rfid123", stale, "spotify:album:123")
+
+        # While we still own playback, the position advances to 90s.
+        ours = _playback_status("test_device", "spotify:album:123")
+        ours.json.return_value["progress_ms"] = 90000
+        ours.json.return_value["item"] = {"uri": "spotify:track:x",
+                                          "track_number": 2}
+        with patch.object(player.auth_manager, "get_token", return_value="tok"), \
+                patch('spotify.requests.get', return_value=ours):
+            player.refresh_playback_state()
+
+        # A phone then takes the session and plays a standalone track.
+        foreign = _playback_status("phone", None)
+        with patch.object(player.auth_manager, "get_token", return_value="tok"), \
+                patch('spotify.requests.get', return_value=foreign), \
+                patch('spotify.requests.put') as mock_put:
+            player.toggle_playback()
+
+        sent = mock_put.call_args.kwargs["json"]
+        assert sent["context_uri"] == "spotify:album:123"
+        # 90000, not the 48360 it was constructed with.
+        assert sent["position_ms"] == 90000

@@ -57,6 +57,11 @@ class AudioPlayer:
         self.play()
         logging.info("Restarting playback")
 
+    def refresh_playback_state(self):
+        """Periodically record position; mpc queries are local and cheap"""
+        if self.playing:
+            self.save_playback_state()
+
     def save_playback_state(self):
         # Lazy import to avoid circular dependency: utils imports AudioPlayer
         import utils
