@@ -601,6 +601,15 @@ class SpotifyPlayer:
         work (status polling, saving state) stays quiet: a beep there would be
         noise, and inside create_player's retry loop it would fire ten times.
         """
-        logging.error("%s: %s", message, e, exc_info=True)
+        # A RequestException already says everything useful in its message -
+        # status code and URL - and its traceback is the same raise_for_status
+        # frame every time. Inside create_player's retry loop that meant ten
+        # identical stack traces per failed scan, burying the one line that
+        # actually mattered. Anything else is unexpected, and there the
+        # traceback is the whole point: the AttributeError that killed the
+        # watchdog thread on 2026-08-17 was only diagnosable from its stack.
+        unexpected = not isinstance(e, requests.RequestException)
+        logging.error("%s: %s", message, e, exc_info=unexpected)
+
         if audible:
             utils.play_sound("playback_error")

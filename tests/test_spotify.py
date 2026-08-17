@@ -691,3 +691,39 @@ def test_missing_token_is_transient_unless_credentials_were_rejected(monkeypatch
             with pytest.raises(SpotifyAuthError) as caught:
                 player._get_headers()
         assert caught.value.permanent is True
+
+# --- log volume ---
+def test_http_failures_log_without_a_traceback(monkeypatch, caplog):
+    """Ten retries used to mean ten identical raise_for_status stacks"""
+    monkeypatch.setenv("SPOTIFY_DEVICE_ID", "test_device")
+    with patch.dict('sys.modules', {'utils': MagicMock()}):
+        from spotify import SpotifyPlayer
+        player = SpotifyPlayer("rfid123", None, "spotify:album:123")
+
+        with caplog.at_level("ERROR"):
+            player.handle_exception(
+                "Transfer playback failed",
+                requests.HTTPError("404 Client Error: Not Found for url: x"))
+
+    assert len(caplog.records) == 1
+    # logging passes a falsy exc_info straight through, so this is False rather
+    # than None; what matters is that no traceback is attached.
+    assert not caplog.records[0].exc_info
+    # The useful detail still survives.
+    assert "404" in caplog.text and "Transfer playback failed" in caplog.text
+
+def test_unexpected_failures_keep_their_traceback(monkeypatch, caplog):
+    """The AttributeError that killed the watchdog was only readable as a stack"""
+    monkeypatch.setenv("SPOTIFY_DEVICE_ID", "test_device")
+    with patch.dict('sys.modules', {'utils': MagicMock()}):
+        from spotify import SpotifyPlayer
+        player = SpotifyPlayer("rfid123", None, "spotify:album:123")
+
+        with caplog.at_level("ERROR"):
+            try:
+                (None).get("uri")
+            except AttributeError as e:
+                player.handle_exception("Failed to resolve track position", e)
+
+    assert len(caplog.records) == 1
+    assert caplog.records[0].exc_info is not None
