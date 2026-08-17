@@ -827,3 +827,94 @@ def test_previous_skips_back_near_the_start(monkeypatch):
 
         mock_post.assert_called_once()
         assert "previous" in mock_post.call_args.args[0]
+
+
+# --- clock-jump resilience ---------------------------------------------------
+
+class TestImpossiblePositions:
+    """The Pi has no RTC, so its clock jumps when NTP finally syncs
+
+    spotifyd derives progress from the wall clock. A jump while it is running
+    made /me/player report progress_ms nearly twenty minutes negative, and the
+    refresh loop wrote every reading straight into the database - overwriting a
+    good saved position with one no playback can be at.
+    """
+
+    ITEM = {"duration_ms": 183794, "track_number": 2, "uri": "spotify:track:t"}
+
+    def _player(self, monkeypatch):
+        monkeypatch.setenv("SPOTIFY_DEVICE_ID", "test_device")
+        with patch.dict('sys.modules', {'utils': MagicMock()}):
+            from spotify import SpotifyPlayer
+            return SpotifyPlayer("rfid123", None, "spotify:album:123")
+
+    def test_negative_position_is_rejected(self, monkeypatch):
+        """The value the device actually reported"""
+        player = self._player(monkeypatch)
+        assert player._position_is_impossible(-1073374, self.ITEM) is True
+
+    def test_position_past_the_end_is_rejected(self, monkeypatch):
+        player = self._player(monkeypatch)
+        assert player._position_is_impossible(999999, self.ITEM) is True
+
+    def test_position_just_past_the_end_is_allowed(self, monkeypatch):
+        """A tick can land after the end just before the track changes"""
+        player = self._player(monkeypatch)
+        assert player._position_is_impossible(183794 + 1000, self.ITEM) is False
+
+    def test_normal_position_is_allowed(self, monkeypatch):
+        player = self._player(monkeypatch)
+        assert player._position_is_impossible(13038, self.ITEM) is False
+
+    def test_missing_duration_still_allows_a_sane_position(self, monkeypatch):
+        player = self._player(monkeypatch)
+        assert player._position_is_impossible(13038, {}) is False
+
+    def test_snapshot_keeps_the_last_good_position(self, monkeypatch):
+        """The saved place must survive a clock jump, not be overwritten"""
+        player = self._player(monkeypatch)
+        player.playback_state = {"offset": {"position": 1},
+                                 "position_ms": 13038}
+
+        state = player._state_from_playback({
+            "item": self.ITEM,
+            "context": {"uri": "spotify:album:123"},
+            "progress_ms": -1073374,
+        })
+
+        assert state == {"offset": {"position": 1}, "position_ms": 13038}
+
+    def test_snapshot_takes_a_sane_position(self, monkeypatch):
+        player = self._player(monkeypatch)
+        player.playback_state = {"offset": {"position": 0}, "position_ms": 0}
+
+        state = player._state_from_playback({
+            "item": self.ITEM,
+            "context": {"uri": "spotify:album:123"},
+            "progress_ms": 42000,
+        })
+
+        assert state["position_ms"] == 42000
+        assert state["offset"]["position"] == 1   # track_number 2, zero-based
+
+    def test_save_persists_the_last_good_position(self, monkeypatch):
+        """save_playback_state must not write the garbage either"""
+        player = self._player(monkeypatch)
+        player.playback_state = {"offset": {"position": 1},
+                                 "position_ms": 13038}
+        playback = {
+            "device": {"id": "test_device"},
+            "context": {"uri": "spotify:album:123"},
+            "item": self.ITEM,
+            "is_playing": True,
+            "progress_ms": -1073374,
+        }
+
+        with patch.object(player, "check_playback_status",
+                          return_value=playback), \
+                patch.object(player, "_persist_state",
+                             return_value=True) as persist:
+            player.save_playback_state()
+
+        persist.assert_called_once_with({"offset": {"position": 1},
+                                         "position_ms": 13038})

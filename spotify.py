@@ -316,6 +316,31 @@ class SpotifyPlayer:
         context_uri = (playback.get("context") or {}).get("uri")
         return device_id == self.device_id and context_uri == self.location
 
+    # A track may legitimately report slightly past its own end between the
+    # last tick and the track change, so allow a little slack before calling a
+    # position impossible.
+    POSITION_GRACE_MS = 5000
+
+    @staticmethod
+    def _position_is_impossible(position_ms, item):
+        """Whether a reported position cannot correspond to real playback
+
+        spotifyd derives progress from the wall clock. This Pi has no RTC, so
+        at boot it starts on a restored fake-hwclock stamp and jumps when NTP
+        finally syncs; a jump while spotifyd is running leaves its progress
+        reports minutes negative, or past the end of the track.
+
+        Persisting that overwrites a good saved position with nonsense, and the
+        next scan then resumes somewhere the child does not expect - which is
+        the whole failure this position tracking exists to prevent.
+        """
+        if position_ms is None or position_ms < 0:
+            return True
+
+        duration_ms = (item or {}).get("duration_ms")
+        return bool(duration_ms
+                    and position_ms > duration_ms + SpotifyPlayer.POSITION_GRACE_MS)
+
     def _state_from_playback(self, playback):
         """Cheap position snapshot taken from a playback payload
 
@@ -327,6 +352,15 @@ class SpotifyPlayer:
         item = playback.get("item") or {}
         context_uri = (playback.get("context") or {}).get("uri")
         context_parts = context_uri.split(":") if context_uri else []
+
+        position_ms = playback.get("progress_ms", 0)
+        if self._position_is_impossible(position_ms, item):
+            # Keep what we had rather than recording a position that cannot be
+            # real; a clock jump must not cost the child their place.
+            logging.warning(
+                "Ignoring impossible playback position %s ms for RFID %s",
+                position_ms, self.rfid)
+            return dict(self.playback_state)
 
         if (len(context_parts) == 3 and context_parts[1] == "album"
                 and (item.get("disc_number") or 1) <= 1):
@@ -341,7 +375,7 @@ class SpotifyPlayer:
 
         return {
             "offset": {"position": offset_position},
-            "position_ms": playback.get("progress_ms", 0),
+            "position_ms": position_ms,
         }
 
     def refresh_playback_state(self):
@@ -573,6 +607,16 @@ class SpotifyPlayer:
         context_uri = (playback.get("context") or {}).get("uri")
         track_uri = item.get("uri")
         offset_position = 0  # fallback default
+
+        if self._position_is_impossible(position_ms, item):
+            # As in _state_from_playback: a clock jump makes the live reading
+            # worthless, and the last position we recorded is better than one
+            # that cannot be real. Resolving the offset below would also be
+            # wasted API calls.
+            logging.warning(
+                "Impossible playback position %s ms for RFID %s; keeping the "
+                "last known position", position_ms, self.rfid)
+            return self._persist_state(self.playback_state)
 
         if not context_uri or not track_uri:
             logging.warning(
