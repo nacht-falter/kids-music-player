@@ -63,11 +63,18 @@ def create_player(music_data, retries=10, delay=1):
 
     if source == "spotify":
         # Lazy import to avoid circular dependency
-        from spotify import SpotifyPlayer
-        
+        from spotify import SpotifyAuthError, SpotifyPlayer
+
         for attempt in range(retries):
-            player = SpotifyPlayer(rfid, playback_state, location)
-            player.transfer_playback(play=False)
+            try:
+                player = SpotifyPlayer(rfid, playback_state, location)
+                player.transfer_playback(play=False)
+            except SpotifyAuthError as e:
+                # Retrying cannot produce a token. Fail now so the card gets
+                # an error sound immediately instead of after the full retry
+                # budget of silence.
+                logging.error("Cannot start Spotify playback: %s", e)
+                return None
             if player.is_ready():
                 logging.info(
                     "Spotify player ready after %d attempt(s)", attempt + 1)

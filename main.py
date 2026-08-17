@@ -192,13 +192,20 @@ class RFIDMusicPlayer:
                     except Exception as e:
                         logging.exception(
                             f"Failed to create player. Error: {e}")
-                        utils.play_sound("playback_error")
                         self.player = None
                     finally:
                         if self.player:
                             self.player.play()
                             if self.button_handler:
                                 self.button_handler.set_player(self.player)
+                        else:
+                            # create_player also returns None without raising,
+                            # once it has exhausted its retries. That used to
+                            # leave a child with silence and no way to tell a
+                            # slow start from a broken one.
+                            logging.error(
+                                "Could not start playback for RFID %s", rfid)
+                            utils.play_sound("playback_error")
 
                         utils.save_last_played(self.db, music_data["rfid"])
 

@@ -214,3 +214,34 @@ def test_verify_env_file_enable_sync_missing():
     }
     with pytest.raises(ValueError):
         verify_env_file(config) 
+def test_create_player_fails_fast_on_auth_error(monkeypatch):
+    """A dead token must not cost the full retry budget of silence"""
+    import spotify
+
+    def boom(*args, **kwargs):
+        raise spotify.SpotifyAuthError("no token")
+
+    monkeypatch.setattr(spotify.SpotifyPlayer, "transfer_playback", boom)
+    monkeypatch.setenv("SPOTIFY_DEVICE_ID", "test_device")
+    music_data = {"rfid": "abc", "source": "spotify",
+                  "playback_state": None, "location": "spotify:album:x"}
+
+    with patch("utils.time.sleep") as mock_sleep:
+        assert create_player(music_data, retries=10) is None
+        # Returned on the first attempt, without waiting between retries.
+        mock_sleep.assert_not_called()
+
+def test_create_player_still_retries_transient_failures(monkeypatch):
+    """Only auth failures short-circuit; a slow spotifyd still gets its retries"""
+    import spotify
+
+    monkeypatch.setattr(spotify.SpotifyPlayer, "transfer_playback",
+                        lambda self, play=False: False)
+    monkeypatch.setattr(spotify.SpotifyPlayer, "is_ready", lambda self: False)
+    monkeypatch.setenv("SPOTIFY_DEVICE_ID", "test_device")
+    music_data = {"rfid": "abc", "source": "spotify",
+                  "playback_state": None, "location": "spotify:album:x"}
+
+    with patch("utils.time.sleep") as mock_sleep:
+        assert create_player(music_data, retries=3) is None
+        assert mock_sleep.call_count == 3

@@ -236,6 +236,10 @@ class SpotifyPlayer:
             response.raise_for_status()
             logging.info("Playback transferred to device %s", self.device_id)
             return True
+        except SpotifyAuthError:
+            # Not retryable: re-raise so create_player stops immediately
+            # rather than spending ten seconds proving it again.
+            raise
         except requests.RequestException as e:
             self.handle_exception("Transfer playback failed", e)
             return False
