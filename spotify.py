@@ -77,13 +77,12 @@ def get_auth_manager():
 
 
 class SpotifyPlayer:
-    def __init__(self, rfid, playback_state, location, db):
+    def __init__(self, rfid, playback_state, location):
         self.base_url = "https://api.spotify.com/v1"
         self.auth_manager = get_auth_manager()
         self.device_id = os.environ.get("SPOTIFY_DEVICE_ID")
         if not self.device_id:
             raise ValueError("SPOTIFY_DEVICE_ID environment variable is not set")
-        self.db = db
         self.rfid = rfid
         self.playback_state = (
             json.loads(playback_state)
@@ -120,6 +119,18 @@ class SpotifyPlayer:
         playback = self.check_playback_status()
         return playback is not None and self.active_device == self.device_id
 
+    def owns_playback(self, playback):
+        """Whether the current playback is this device playing our own album
+
+        False when another device holds the session, or when this device was
+        handed something else (e.g. a podcast transferred from a phone).
+        """
+        if not playback:
+            return False
+        device_id = (playback.get("device") or {}).get("id")
+        context_uri = (playback.get("context") or {}).get("uri")
+        return device_id == self.device_id and context_uri == self.location
+
     def check_playback_status(self):
         try:
             response = requests.get(
@@ -129,7 +140,9 @@ class SpotifyPlayer:
                 return None
             response.raise_for_status()
             playback = response.json()
-            device_id = playback.get("device", {}).get("id")
+            # Spotify sends explicit nulls for these, so a dict default is not
+            # enough - it only applies when the key is absent.
+            device_id = (playback.get("device") or {}).get("id")
             self.active_device = device_id
             self.playing = (device_id == self.device_id) and playback.get(
                 "is_playing")
@@ -140,7 +153,7 @@ class SpotifyPlayer:
 
     def play(self):
         url = self._device_url("play")
-        position = self.playback_state.get("offset", {}).get("position", 0)
+        position = (self.playback_state.get("offset") or {}).get("position", 0)
         position_ms = self.playback_state.get("position_ms", 0)
 
         data = {
@@ -186,15 +199,41 @@ class SpotifyPlayer:
             self.handle_exception("Pause failed", e)
 
     def toggle_playback(self):
+        # Refresh first: a phone may have paused, started or taken the session
+        # since we last looked, and every decision below depends on that.
+        playback = self.check_playback_status()
+
         if self.playing:
             self.pause_playback()
-        else:
+        elif self.owns_playback(playback):
+            # Our own album, merely paused - resume in place.
             self.resume_playback()
+        else:
+            # Another device holds the session, or this device was handed
+            # foreign content. Reclaim by playing our album explicitly;
+            # resume_playback() would play whatever is loaded there.
+            logging.info(
+                "Reclaiming playback for RFID %s (current playback is not "
+                "ours)", self.rfid)
+            self.play()
+
+    def ensure_owns_playback(self, action):
+        """Refresh playback state, reclaiming our album if it is not ours
+
+        Returns True when this device is already playing our album, so the
+        caller can act on it. Returns False after reclaiming, in which case
+        the press has been spent restarting our album instead.
+        """
+        playback = self.check_playback_status()
+        if self.owns_playback(playback):
+            return True
+        logging.info(
+            "Reclaiming playback for RFID %s instead of %s", self.rfid, action)
+        self.play()
+        return False
 
     def next_track(self):
-        if self.active_device != self.device_id:
-            logging.warning(
-                "Can't skip track: playback controlled by another device.")
+        if not self.ensure_owns_playback("skipping to next track"):
             return
         url = self._device_url("next")
         try:
@@ -206,9 +245,7 @@ class SpotifyPlayer:
             self.handle_exception("Next track failed", e)
 
     def previous_track(self):
-        if self.active_device != self.device_id:
-            logging.warning(
-                "Can't go to previous track: playback controlled by another device.")
+        if not self.ensure_owns_playback("going to the previous track"):
             return
         url = self._device_url("previous")
         try:
@@ -238,9 +275,17 @@ class SpotifyPlayer:
             logging.debug("No playback data available to save")
             return
 
+        # /me/player reports whatever the account is playing, on any device.
+        # Saving that blindly writes a foreign album's position onto this card.
+        if not self.owns_playback(playback):
+            logging.info(
+                "Not saving playback state for RFID %s: current playback is "
+                "not ours", self.rfid)
+            return
+
         position_ms = playback.get("progress_ms", 0)
-        item = playback.get("item", {})
-        context_uri = playback.get("context", {}).get("uri")
+        item = playback.get("item") or {}
+        context_uri = (playback.get("context") or {}).get("uri")
         track_uri = item.get("uri")
         offset_position = 0  # fallback default
 
@@ -267,12 +312,9 @@ class SpotifyPlayer:
         }
 
         try:
-            self.db.cursor().execute(
-                "UPDATE music SET playback_state = ? WHERE rfid = ?",
-                (json.dumps(self.playback_state), self.rfid),
-            )
+            utils.persist_playback_state(self.rfid, self.playback_state)
             logging.info("Playback state saved for RFID %s", self.rfid)
-        except sqlite3.DatabaseError as e:
+        except (sqlite3.DatabaseError, ValueError) as e:
             self.handle_exception("Saving playback state failed", e)
 
     def _get_track_position_in_playlist(self, playlist_id, track_uri):

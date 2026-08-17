@@ -123,7 +123,7 @@ class ButtonHandler:
                     stop_event, thread = None, None
 
                 try:
-                    new_player = utils.create_player(music_data, db)
+                    new_player = utils.create_player(music_data)
                     if new_player:
                         self.set_player(new_player)
                         new_player.play()

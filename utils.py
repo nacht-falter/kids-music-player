@@ -1,15 +1,40 @@
+import json
 import logging
 import os
+import sqlite3
 import subprocess
 import time
 
 from local import AudioPlayer
-from spotify import SpotifyPlayer
 
 try:
     import led
 except ImportError:
     led = None
+
+
+def persist_playback_state(rfid, playback_state):
+    """Write playback state for an RFID to the database
+
+    Uses its own short-lived connection: players are created from both the
+    button callback thread and the RFID thread, and a sqlite connection may
+    only be used by the thread that created it. Committing here also means the
+    write survives shutdown, which exits without touching the shared
+    connection.
+    """
+    database_url = os.getenv("DATABASE_URL")
+    if not database_url:
+        raise ValueError("DATABASE_URL environment variable is not set")
+
+    db = sqlite3.connect(database_url)
+    try:
+        with db:  # commits on success, rolls back on error
+            db.execute(
+                "UPDATE music SET playback_state = ? WHERE rfid = ?",
+                (json.dumps(playback_state), rfid),
+            )
+    finally:
+        db.close()
 
 
 def get_music_data(db, rfid):
@@ -27,7 +52,7 @@ def get_music_data(db, rfid):
         return None
 
 
-def create_player(music_data, db, retries=10, delay=1):
+def create_player(music_data, retries=10, delay=1):
     """Create audio player instance"""
     rfid = music_data["rfid"]
     source = music_data.get("source")
@@ -37,8 +62,11 @@ def create_player(music_data, db, retries=10, delay=1):
     logging.info("Creating player for RFID %s", rfid)
 
     if source == "spotify":
+        # Lazy import to avoid circular dependency
+        from spotify import SpotifyPlayer
+        
         for attempt in range(retries):
-            player = SpotifyPlayer(rfid, playback_state, location, db)
+            player = SpotifyPlayer(rfid, playback_state, location)
             player.transfer_playback(play=False)
             if player.is_ready():
                 logging.info(
@@ -53,7 +81,7 @@ def create_player(music_data, db, retries=10, delay=1):
         return None
 
     elif source == "local":
-        return AudioPlayer(rfid, playback_state, location, db)
+        return AudioPlayer(rfid, playback_state, location)
 
     else:
         logging.warning("Unknown music source: %s", source)

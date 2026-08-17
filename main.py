@@ -167,7 +167,7 @@ class RFIDMusicPlayer:
                         stop_event, thread = None, None
 
                     try:
-                        self.player = utils.create_player(music_data, self.db)
+                        self.player = utils.create_player(music_data)
                     except Exception as e:
                         logging.exception(
                             f"Failed to create player. Error: {e}")

@@ -5,8 +5,7 @@ import re
 
 
 class AudioPlayer:
-    def __init__(self, rfid, playback_state, location, db):
-        self.db = db
+    def __init__(self, rfid, playback_state, location):
         self.rfid = rfid
         self.playback_state = (
             json.loads(playback_state)
@@ -59,6 +58,9 @@ class AudioPlayer:
         logging.info("Restarting playback")
 
     def save_playback_state(self):
+        # Lazy import to avoid circular dependency: utils imports AudioPlayer
+        import utils
+
         try:
             track_number = os.popen("mpc current -f %position%").read().strip()
             mpc_status = os.popen("mpc status").readlines()
@@ -70,10 +72,7 @@ class AudioPlayer:
                 if len(mpc_status) > 1 else "0%"
             )
             self.playback_state = {"track": track_number, "position": position}
-            self.db.cursor().execute(
-                "UPDATE music SET playback_state = ? WHERE rfid = ?",
-                (json.dumps(self.playback_state), self.rfid),
-            )
+            utils.persist_playback_state(self.rfid, self.playback_state)
             logging.info("Playback state saved for RFID %s", self.rfid)
         except Exception as e:
             logging.error("Error saving playback state: %s", e, exc_info=True)
