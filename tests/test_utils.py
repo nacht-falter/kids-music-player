@@ -63,7 +63,10 @@ def test_create_player_spotify(monkeypatch):
             self.location = location
             self._ready = True
         def transfer_playback(self, play):
-            pass
+            # Mirrors the real contract: True on success, False on failure.
+            # create_player now relies on this, so a double returning None
+            # silently looks like a failed transfer.
+            return True
         def is_ready(self):
             return self._ready
     
@@ -268,3 +271,47 @@ def test_handle_already_playing_uses_refreshed_value():
 
     player.toggle_playback.assert_called_once()
     player.restart_playback.assert_not_called()
+
+
+def test_create_player_skips_readiness_check_after_failed_transfer():
+    """is_ready() is a second round trip confirming what we already know"""
+    import spotify
+    calls = {"is_ready": 0}
+
+    def failed_transfer(self, play=False):
+        return False
+
+    def counted_is_ready(self):
+        calls["is_ready"] += 1
+        return False
+
+    with patch.object(spotify.SpotifyPlayer, "transfer_playback", failed_transfer), \
+            patch.object(spotify.SpotifyPlayer, "is_ready", counted_is_ready), \
+            patch.dict(os.environ, {"SPOTIFY_DEVICE_ID": "d"}), \
+            patch("utils.time.sleep"):
+        music_data = {"rfid": "abc", "source": "spotify",
+                      "playback_state": None, "location": "spotify:album:x"}
+        assert create_player(music_data, retries=3) is None
+
+    assert calls["is_ready"] == 0
+
+
+def test_create_player_still_checks_readiness_after_successful_transfer():
+    import spotify
+    calls = {"is_ready": 0}
+
+    def ok_transfer(self, play=False):
+        return True
+
+    def ready(self):
+        calls["is_ready"] += 1
+        return True
+
+    with patch.object(spotify.SpotifyPlayer, "transfer_playback", ok_transfer), \
+            patch.object(spotify.SpotifyPlayer, "is_ready", ready), \
+            patch.dict(os.environ, {"SPOTIFY_DEVICE_ID": "d"}):
+        music_data = {"rfid": "abc", "source": "spotify",
+                      "playback_state": None, "location": "spotify:album:x"}
+        assert create_player(music_data, retries=3) is not None
+
+    assert calls["is_ready"] == 1

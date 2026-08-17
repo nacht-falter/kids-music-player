@@ -363,8 +363,7 @@ class SpotifyPlayer:
             logging.info(
                 "Started playback from beginning at position %d (%d ms)", position, position_ms)
         except requests.RequestException as e:
-            self.handle_exception("Playback failed", e)
-            utils.play_sound("playback_error")
+            self.handle_exception("Playback failed", e, audible=True)
 
     def resume_playback(self):
         url = self._device_url("play")
@@ -375,8 +374,7 @@ class SpotifyPlayer:
             self.active_device = self.device_id
             logging.info("Resumed playback on device %s", self.device_id)
         except requests.RequestException as e:
-            self.handle_exception("Resuming playback failed", e)
-            utils.play_sound("playback_error")
+            self.handle_exception("Resuming playback failed", e, audible=True)
 
     def pause_playback(self):
         if not self.playing:
@@ -388,7 +386,7 @@ class SpotifyPlayer:
             self.playing = False
             logging.info("Playback paused")
         except requests.RequestException as e:
-            self.handle_exception("Pause failed", e)
+            self.handle_exception("Pause failed", e, audible=True)
 
     def toggle_playback(self):
         # Refresh first: a phone may have paused, started or taken the session
@@ -434,7 +432,7 @@ class SpotifyPlayer:
             self.playing = True
             logging.info("Skipped to next track")
         except requests.RequestException as e:
-            self.handle_exception("Next track failed", e)
+            self.handle_exception("Next track failed", e, audible=True)
 
     def previous_track(self):
         if not self.ensure_owns_playback("going to the previous track"):
@@ -446,7 +444,7 @@ class SpotifyPlayer:
             self.playing = True
             logging.info("Returned to previous track")
         except requests.RequestException as e:
-            self.handle_exception("Previous track failed", e)
+            self.handle_exception("Previous track failed", e, audible=True)
 
     def restart_playback(self):
         url = self._device_url("play")
@@ -459,10 +457,7 @@ class SpotifyPlayer:
             self.playing = True
             logging.info("Playback restarted from beginning")
         except requests.RequestException as e:
-            self.handle_exception("Restart failed", e)
-            # Same as play(): a child who rescans a card and gets nothing has
-            # no way to tell a broken device from one that ignored them.
-            utils.play_sound("playback_error")
+            self.handle_exception("Restart failed", e, audible=True)
 
     def _persist_state(self, state):
         try:
@@ -583,5 +578,14 @@ class SpotifyPlayer:
             disc_number)
         return self._get_track_position_in_album(album_id, track_uri)
 
-    def handle_exception(self, message, e):
+    def handle_exception(self, message, e, audible=False):
+        """Log a failure, and optionally tell whoever is standing there
+
+        audible=True for actions a child initiated - a scan or a button press -
+        where silence cannot be told apart from a broken device. Background
+        work (status polling, saving state) stays quiet: a beep there would be
+        noise, and inside create_player's retry loop it would fire ten times.
+        """
         logging.error("%s: %s", message, e, exc_info=True)
+        if audible:
+            utils.play_sound("playback_error")

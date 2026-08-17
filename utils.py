@@ -68,14 +68,18 @@ def create_player(music_data, retries=10, delay=1):
         for attempt in range(retries):
             try:
                 player = SpotifyPlayer(rfid, playback_state, location)
-                player.transfer_playback(play=False)
+                transferred = player.transfer_playback(play=False)
             except SpotifyAuthError as e:
                 # Retrying cannot produce a token. Fail now so the card gets
                 # an error sound immediately instead of after the full retry
                 # budget of silence.
                 logging.error("Cannot start Spotify playback: %s", e)
                 return None
-            if player.is_ready():
+            # Only ask whether it is ready if the transfer worked. When it
+            # did not, the device is not there and is_ready() is a second HTTP
+            # round trip to confirm what we already know - which was most of
+            # the 17.4s a failing scan took before any sound came out.
+            if transferred and player.is_ready():
                 logging.info(
                     "Spotify player ready after %d attempt(s)", attempt + 1)
                 return player
