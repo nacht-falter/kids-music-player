@@ -125,3 +125,36 @@ def test_sync_not_scheduled_when_disabled(app, monkeypatch):
     with patch("main.schedule_sync") as mock_schedule:
         app.setup_sync()
     mock_schedule.assert_not_called()
+
+
+def _run_watchdog(app, playing, seconds):
+    """Run the real watchdog loop briefly and report whether it shut down."""
+    app.idle_time = 2
+    app.STATE_REFRESH_INTERVAL = 0.1
+    player = MagicMock()
+    player.playing = playing
+    app.player = player
+    app.reset_last_activity()
+
+    with patch("main.utils") as mock_utils:
+        app.start_watchdog()          # daemon thread; the test outlives it
+        stop = threading.Event()
+        stop.wait(seconds)
+        return mock_utils.shutdown.called, player
+
+
+def test_playback_keeps_the_device_awake(app):
+    """A story longer than IDLE_TIME used to be cut off mid-way
+
+    Only scans and button presses reset the timer, so uninterrupted playback -
+    including anything pushed to this device from a phone - was invisible.
+    """
+    shut_down, player = _run_watchdog(app, playing=True, seconds=4)
+    assert not shut_down, "shut down while playback was active"
+    player.refresh_playback_state.assert_called()
+
+
+def test_silence_still_shuts_down(app):
+    """The idle shutdown must still happen; the device runs on a battery"""
+    shut_down, _ = _run_watchdog(app, playing=False, seconds=4)
+    assert shut_down, "did not shut down despite being idle"

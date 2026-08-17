@@ -159,11 +159,23 @@ class RFIDMusicPlayer:
                 now = time.monotonic()
                 if now - last_state_refresh >= self.STATE_REFRESH_INTERVAL:
                     last_state_refresh = now
-                    # Bounds how far a reclaim can rewind: once another device
-                    # takes the session, our position is no longer visible.
                     with self.player_lock:
                         if self.player:
+                            # Bounds how far a reclaim can rewind: once another
+                            # device takes the session, our position is no
+                            # longer visible.
                             self.player.refresh_playback_state()
+
+                            # Playing counts as activity. Only scans and button
+                            # presses did before, so a story longer than
+                            # IDLE_TIME was cut off mid-way if nobody touched
+                            # anything - and playback started from a phone was
+                            # invisible entirely. check_playback_status(), which
+                            # the refresh above just ran, sets `playing` only
+                            # when this device is the active one, so it covers
+                            # both a scanned card and anything pushed to us.
+                            if self.player.playing:
+                                self.reset_last_activity()
 
                 time.sleep(1)
 
