@@ -526,3 +526,61 @@ def test_cooldown_expires_and_recovery_clears_it(monkeypatch):
         with patch('spotify.requests.post', return_value=good):
             assert am.get_token() == "fresh"
         assert am.rejected_at == 0
+
+# --- context offset resolution ---
+def _page(items, has_next=False):
+    r = MagicMock()
+    r.status_code = 200
+    r.raise_for_status.return_value = None
+    r.json.return_value = {"items": items, "next": "url" if has_next else None}
+    return r
+
+def test_single_disc_album_offset_needs_no_request(monkeypatch):
+    monkeypatch.setenv("SPOTIFY_DEVICE_ID", "test_device")
+    with patch.dict('sys.modules', {'utils': MagicMock()}):
+        from spotify import SpotifyPlayer
+        p = SpotifyPlayer("rfid123", None, "spotify:album:abc")
+        with patch.object(p.auth_manager, "get_token", return_value="tok"), \
+                patch('spotify.requests.get') as mock_get:
+            item = {"track_number": 5, "disc_number": 1}
+            assert p._album_offset("abc", item, "spotify:track:x") == 4
+            mock_get.assert_not_called()
+
+def test_multi_disc_album_resolves_true_offset(monkeypatch):
+    """track_number restarts per disc, so disc 2 track 1 is not offset 0"""
+    monkeypatch.setenv("SPOTIFY_DEVICE_ID", "test_device")
+    with patch.dict('sys.modules', {'utils': MagicMock()}):
+        from spotify import SpotifyPlayer
+        p = SpotifyPlayer("rfid123", None, "spotify:album:abc")
+        # Disc 1 has 3 tracks; the wanted track is disc 2 track 1 -> index 3.
+        tracks = [{"uri": "spotify:track:a"}, {"uri": "spotify:track:b"},
+                  {"uri": "spotify:track:c"}, {"uri": "spotify:track:want"}]
+        with patch.object(p.auth_manager, "get_token", return_value="tok"), \
+                patch('spotify.requests.get', return_value=_page(tracks)):
+            item = {"track_number": 1, "disc_number": 2}
+            assert p._album_offset("abc", item, "spotify:track:want") == 3
+
+def test_playlist_offset_is_absolute_across_pages(monkeypatch):
+    """A match on page 2 must not report its index within that page"""
+    monkeypatch.setenv("SPOTIFY_DEVICE_ID", "test_device")
+    with patch.dict('sys.modules', {'utils': MagicMock()}):
+        from spotify import SpotifyPlayer
+        p = SpotifyPlayer("rfid123", None, "spotify:playlist:abc")
+        page1 = _page([{"track": {"uri": "spotify:track:%d" % i}}
+                       for i in range(100)], has_next=True)
+        page2 = _page([{"track": {"uri": "spotify:track:other"}},
+                       {"track": {"uri": "spotify:track:want"}}])
+        with patch.object(p.auth_manager, "get_token", return_value="tok"), \
+                patch('spotify.requests.get', side_effect=[page1, page2]):
+            # Second entry of the second page -> 100 + 1, not 1.
+            assert p._get_track_position_in_playlist(
+                "abc", "spotify:track:want") == 101
+
+def test_missing_track_falls_back_to_zero(monkeypatch):
+    monkeypatch.setenv("SPOTIFY_DEVICE_ID", "test_device")
+    with patch.dict('sys.modules', {'utils': MagicMock()}):
+        from spotify import SpotifyPlayer
+        p = SpotifyPlayer("rfid123", None, "spotify:playlist:abc")
+        with patch.object(p.auth_manager, "get_token", return_value="tok"), \
+                patch('spotify.requests.get', return_value=_page([])):
+            assert p._get_track_position_in_playlist("abc", "nope") == 0

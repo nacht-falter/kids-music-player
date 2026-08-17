@@ -217,9 +217,14 @@ class SpotifyPlayer:
         context_uri = (playback.get("context") or {}).get("uri")
         context_parts = context_uri.split(":") if context_uri else []
 
-        if len(context_parts) == 3 and context_parts[1] == "album":
+        if (len(context_parts) == 3 and context_parts[1] == "album"
+                and (item.get("disc_number") or 1) <= 1):
             offset_position = max(0, item.get("track_number", 1) - 1)
         else:
+            # Playlists and multi-disc albums cannot be resolved without
+            # another request, which is not worth making on every tick. Keep
+            # the last known offset; save_playback_state() resolves it
+            # properly.
             offset_position = (
                 self.playback_state.get("offset") or {}).get("position", 0)
 
@@ -440,7 +445,8 @@ class SpotifyPlayer:
                     offset_position = self._get_track_position_in_playlist(
                         context_parts[2], track_uri)
                 elif len(context_parts) == 3 and context_parts[1] == "album":
-                    offset_position = max(0, item.get("track_number", 1) - 1)
+                    offset_position = self._album_offset(
+                        context_parts[2], item, track_uri)
                 else:
                     logging.warning(
                         "Unsupported context type: %s", context_uri)
@@ -454,26 +460,63 @@ class SpotifyPlayer:
 
         return self._persist_state(self.playback_state)
 
-    def _get_track_position_in_playlist(self, playlist_id, track_uri):
+    def _find_track_index(self, url, track_uri, uri_of):
+        """Absolute index of track_uri within a paginated context listing"""
         headers = self._get_headers()
-        url = f"{self.base_url}/playlists/{playlist_id}/tracks"
         params = {"limit": 100, "offset": 0}
 
         while True:
             response = requests.get(url, headers=headers, params=params)
             response.raise_for_status()
-            items = response.json().get("items", [])
-            for index, item in enumerate(items):
-                track = item.get("track", {})
-                if track.get("uri") == track_uri:
-                    return index
-            if response.json().get("next"):
-                params["offset"] += params["limit"]
-            else:
-                break
+            page = response.json()
 
-        logging.warning("Track URI not found in playlist")
-        return 0  # fallback
+            for index, entry in enumerate(page.get("items", [])):
+                if uri_of(entry) == track_uri:
+                    # Offset of the page plus position within it. Returning the
+                    # bare index put every match beyond the first page up to
+                    # 100 tracks too early.
+                    return params["offset"] + index
+
+            if not page.get("next"):
+                return None
+            params["offset"] += params["limit"]
+
+    def _get_track_position_in_playlist(self, playlist_id, track_uri):
+        index = self._find_track_index(
+            f"{self.base_url}/playlists/{playlist_id}/tracks",
+            track_uri,
+            lambda entry: (entry.get("track") or {}).get("uri"))
+        if index is None:
+            logging.warning("Track URI not found in playlist")
+            return 0  # fallback
+        return index
+
+    def _get_track_position_in_album(self, album_id, track_uri):
+        index = self._find_track_index(
+            f"{self.base_url}/albums/{album_id}/tracks",
+            track_uri,
+            lambda entry: entry.get("uri"))
+        if index is None:
+            logging.warning("Track URI not found in album")
+            return 0  # fallback
+        return index
+
+    def _album_offset(self, album_id, item, track_uri):
+        """Index of the current track within an album context
+
+        track_number restarts at 1 on each disc, so on a multi-disc album it is
+        not the offset into the context - a track on disc 2 would resume near
+        the start of disc 1. Single-disc albums, which is all of ours today,
+        keep the free path and make no extra request.
+        """
+        disc_number = item.get("disc_number") or 1
+        if disc_number <= 1:
+            return max(0, item.get("track_number", 1) - 1)
+
+        logging.debug(
+            "Multi-disc album (disc %d); resolving offset from the track list",
+            disc_number)
+        return self._get_track_position_in_album(album_id, track_uri)
 
     def handle_exception(self, message, e):
         logging.error("%s: %s", message, e, exc_info=True)
