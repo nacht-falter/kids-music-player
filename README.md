@@ -196,6 +196,25 @@ curl -s -X POST https://accounts.spotify.com/api/token \
 
 Remember your `client_id`, `client_secret`, and `refresh_token` for your application configuration.
 
+#### Re-authorizing later (required every 6 months)
+
+Spotify expires refresh tokens six months after authorization, so the player will stop working with
+`400 invalid_grant` until it is re-authorized. `reauth.py` automates the flow above:
+
+```bash
+python reauth.py --host toem2      # update .env on a device over ssh
+python reauth.py                   # or operate on a local .env
+python reauth.py --dry-run         # check without writing
+```
+
+It prints an authorization URL, takes the pasted code (or the whole redirect URL), and then
+**validates before installing**: the new token must belong to the same Spotify account `spotifyd` is
+logged in as, and the configured `SPOTIFY_DEVICE_ID` must appear in that account's device list. This
+matters because a token issued to the wrong account authenticates perfectly and fails only later,
+with an empty device list and cards that silently do nothing.
+
+It backs up `.env`, records `SPOTIFY_AUTH_DATE`, and restarts the service.
+
 ### 5. Get your Spotifyd device ID:
 
 ```bash
