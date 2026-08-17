@@ -137,6 +137,11 @@ sudo systemctl --user start spotifyd
 2. Create a new app and note your `client_id` and `client_secret`
 3. Set the Redirect URI to: `https://johannesbernet.com/spotify/callback`
 
+   That is the callback of the hosted helper in the next step, which is entirely
+   client-side — nothing you enter reaches the server. If you would rather not depend on
+   someone else's page, host `auth.html`/`callback.html` yourself and register your own
+   URL instead; it has to match the authorize request byte for byte.
+
 #### Step 2: Get Your Refresh Token
 You can use this online helper tool to get a refresh token: [https://johannesbernet.com/spotify/auth](https://johannesbernet.com/spotify/auth)
 
@@ -202,9 +207,9 @@ Spotify expires refresh tokens six months after authorization, so the player wil
 `400 invalid_grant` until it is re-authorized. `reauth.py` automates the flow above:
 
 ```bash
-python reauth.py --host toem2      # update .env on a device over ssh
-python reauth.py                   # or operate on a local .env
-python reauth.py --dry-run         # check without writing
+python reauth.py --host <ssh-host>   # update .env on a device over ssh
+python reauth.py                     # or operate on a local .env
+python reauth.py --dry-run           # check without writing
 ```
 
 It prints an authorization URL, takes the pasted code (or the whole redirect URL), and then
@@ -384,16 +389,22 @@ Place music in MPD music folder and run `mpc update`
 
 Both registration tools search Spotify directly, so URIs rarely need copying. If you do
 want one — Spotify app → Share → Copy Spotify URI — it looks like
-`spotify:album:1chTWZhEdZvGu8sMVuZt2W`, and both tools also accept the
-`https://open.spotify.com/album/...` link that "Copy link" gives you.
+`spotify:album:<22-character id>`, and both tools also accept the
+`https://open.spotify.com/album/<id>?si=...` link that "Copy link" gives you.
 
 ### Register RFID Cards
 
-**From a browser (including a phone):** <https://johannesbernet.com/toem/register>
+Both options below talk to your own sync API (see step 10) — there is no shared service,
+so deploy [toem-api](https://github.com/nacht-falter/toem-api) first if you have not.
 
-Sign in, type or scan the card number, search for an album and save. Nothing is copied by
-hand and the player does not need to be switched on — it picks new cards up within a
-minute of being on.
+**From a browser, including a phone.** [toem-web](https://github.com/nacht-falter/toem-web)
+is a static page you host yourself; point it at your API and it needs no credentials of
+its own. Sign in, type or scan the card number, search for an album and save. Nothing is
+copied by hand, and the player does not need to be switched on — it picks new cards up
+within a minute of being on.
+
+Album search needs `SPOTIFY_USERCREDS` and `CORS_ORIGINS` set on your API, since Spotify
+rejects unauthenticated search and the credentials must not ship in a browser.
 
 **From the terminal:**
 ```bash
@@ -404,7 +415,8 @@ Same idea: `(a)dd`, `(d)elete`, `(l)ist`. Search by album name and the URI and t
 themselves in; pasted `open.spotify.com` links work too.
 
 Card numbers are stored zero-padded to ten digits, but both tools accept the number as
-printed on the card and pad it, so `1221753` finds `0001221753`.
+printed on the card and pad it, so a number written without its leading zeros still
+matches.
 
 The RFID reader is a USB HID device: it types the digits and sends Enter, so scanning a
 card straight into either prompt fills it in and moves on.
