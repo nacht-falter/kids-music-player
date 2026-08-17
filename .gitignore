@@ -5,3 +5,7 @@
 /sounds/speech/instructions*
 /.config
 *.log
+.coverage
+__pycache__/
+htmlcov/
+.pytest_cache/
