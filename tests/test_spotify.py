@@ -5,6 +5,8 @@ import pytest
 from unittest.mock import patch, MagicMock
 import json
 import sqlite3
+import time
+
 import requests
 
 def setup_in_memory_db():
@@ -65,6 +67,7 @@ def test_spotify_auth_manager_get_token_success(monkeypatch):
         
         # Mock only the post method
         mock_response = MagicMock()
+        mock_response.status_code = 200
         mock_response.json.return_value = {
             "access_token": "new_token",
             "expires_in": 3600
@@ -84,9 +87,12 @@ def test_spotify_auth_manager_token_refresh_failure(monkeypatch):
         auth_manager = SpotifyAuthManager()
         
         # Mock only the post method with the correct exception type
-        with patch('spotify.requests.post', side_effect=requests.RequestException("Network error")):
+        with patch('spotify.requests.post', side_effect=requests.RequestException("Network error")), \
+                patch('spotify.time.sleep') as mock_sleep:
             token = auth_manager.get_token()
             assert token is None
+            # Backoff is exercised, but not actually waited through.
+            assert mock_sleep.call_count == auth_manager.RETRIES - 1
 
 # --- SpotifyPlayer tests ---
 def test_spotify_player_init_success(monkeypatch):
@@ -429,3 +435,94 @@ def test_refresh_playback_state_skips_unchanged(monkeypatch):
             assert player.refresh_playback_state() is True   # first: changed
             assert player.refresh_playback_state() is False  # second: identical
             assert mock_persist.call_count == 1
+
+# --- auth failure handling ---
+def _token_error(status, body):
+    r = MagicMock()
+    r.status_code = status
+    r.text = body
+    r.json.return_value = __import__("json").loads(body)
+    r.raise_for_status.side_effect = requests.HTTPError("%d Client Error" % status)
+    return r
+
+def test_invalid_grant_is_not_retried(monkeypatch):
+    """An expired refresh token is permanent; retrying only delays the failure"""
+    monkeypatch.setenv("SPOTIFY_USERCREDS", "test_creds")
+    monkeypatch.setenv("SPOTIFY_REFRESH_TOKEN", "test_token")
+
+    with patch.dict('sys.modules', {'utils': MagicMock()}):
+        from spotify import SpotifyAuthManager
+        am = SpotifyAuthManager()
+        resp = _token_error(400, '{"error":"invalid_grant",'
+                                 '"error_description":"Refresh token revoked"}')
+        with patch('spotify.requests.post', return_value=resp) as mock_post, \
+                patch('spotify.time.sleep') as mock_sleep:
+            assert am.get_token() is None
+            mock_post.assert_called_once()      # not three times
+            mock_sleep.assert_not_called()      # and no backoff
+
+def test_transient_failure_is_still_retried(monkeypatch):
+    monkeypatch.setenv("SPOTIFY_USERCREDS", "test_creds")
+    monkeypatch.setenv("SPOTIFY_REFRESH_TOKEN", "test_token")
+
+    with patch.dict('sys.modules', {'utils': MagicMock()}):
+        from spotify import SpotifyAuthManager
+        am = SpotifyAuthManager()
+        with patch('spotify.requests.post',
+                   side_effect=requests.RequestException("boom")) as mock_post, \
+                patch('spotify.time.sleep'):
+            assert am.get_token() is None
+            assert mock_post.call_count == am.RETRIES
+
+def test_missing_token_raises_instead_of_bearer_none(monkeypatch):
+    """No token must not produce an 'Authorization: Bearer None' request"""
+    monkeypatch.setenv("SPOTIFY_DEVICE_ID", "test_device")
+
+    with patch.dict('sys.modules', {'utils': MagicMock()}):
+        from spotify import SpotifyPlayer, SpotifyAuthError
+        player = SpotifyPlayer("rfid123", None, "spotify:album:123")
+
+        with patch.object(player.auth_manager, "get_token", return_value=None):
+            with pytest.raises(SpotifyAuthError):
+                player._get_headers()
+
+            # And it is handled, not crashing, by the normal call paths.
+            with patch('spotify.requests.get') as mock_get:
+                assert player.check_playback_status() is None
+                mock_get.assert_not_called()
+
+def test_rejected_credentials_are_not_re_requested(monkeypatch):
+    """A dead refresh token must not mean a token request per API call"""
+    monkeypatch.setenv("SPOTIFY_USERCREDS", "test_creds")
+    monkeypatch.setenv("SPOTIFY_REFRESH_TOKEN", "test_token")
+
+    with patch.dict('sys.modules', {'utils': MagicMock()}):
+        from spotify import SpotifyAuthManager
+        am = SpotifyAuthManager()
+        resp = _token_error(400, '{"error":"invalid_grant"}')
+        with patch('spotify.requests.post', return_value=resp) as mock_post:
+            for _ in range(10):
+                assert am.get_token() is None
+            mock_post.assert_called_once()
+
+def test_cooldown_expires_and_recovery_clears_it(monkeypatch):
+    monkeypatch.setenv("SPOTIFY_USERCREDS", "test_creds")
+    monkeypatch.setenv("SPOTIFY_REFRESH_TOKEN", "test_token")
+
+    with patch.dict('sys.modules', {'utils': MagicMock()}):
+        from spotify import SpotifyAuthManager
+        am = SpotifyAuthManager()
+        bad = _token_error(400, '{"error":"invalid_grant"}')
+        with patch('spotify.requests.post', return_value=bad):
+            assert am.get_token() is None
+        assert am.rejected_at
+
+        # Pretend the cooldown elapsed and the token was fixed.
+        am.rejected_at = time.time() - am.PERMANENT_FAILURE_COOLDOWN - 1
+        good = MagicMock()
+        good.status_code = 200
+        good.json.return_value = {"access_token": "fresh", "expires_in": 3600}
+        good.raise_for_status.return_value = None
+        with patch('spotify.requests.post', return_value=good):
+            assert am.get_token() == "fresh"
+        assert am.rejected_at == 0

@@ -9,10 +9,32 @@ import requests
 import utils
 
 
+class SpotifyAuthError(requests.RequestException):
+    """Raised when no usable access token is available
+
+    Subclasses RequestException so the existing `except requests.RequestException`
+    handlers treat it like any other API failure. Raising something they do not
+    catch would propagate to main.run(), which returns 1, and systemd's
+    StartLimitBurst would then park the unit in a failed state after five
+    restarts - turning an expired token into a device that stays dead.
+    """
+
+
 class SpotifyAuthManager:
+    # Refreshing is only worth retrying for transient failures. These are
+    # class attributes so tests can shrink them.
+    RETRIES = 3
+    RETRY_DELAY = 3
+    # After Spotify rejects the credentials themselves, stop asking for a
+    # while. Every API call goes through get_token(), so without this a dead
+    # refresh token means a token request per call - ten per card scan, given
+    # create_player's retries - all of them certain to fail.
+    PERMANENT_FAILURE_COOLDOWN = 300
+
     def __init__(self):
         self.token = None
         self.expiry = 0  # Timestamp when token expires
+        self.rejected_at = 0  # When Spotify last rejected our credentials
         self.usercreds = os.environ.get("SPOTIFY_USERCREDS")
         self.refresh_token = os.environ.get("SPOTIFY_REFRESH_TOKEN")
 
@@ -24,6 +46,13 @@ class SpotifyAuthManager:
 
     def get_token(self):
         if not self.token or time.time() >= self.expiry:
+            since_rejected = time.time() - self.rejected_at
+            if self.rejected_at and since_rejected < self.PERMANENT_FAILURE_COOLDOWN:
+                logging.debug(
+                    "Skipping token request: credentials were rejected %.0fs "
+                    "ago, retrying in %.0fs",
+                    since_rejected, self.PERMANENT_FAILURE_COOLDOWN - since_rejected)
+                return None
             self._refresh_token()
         return self.token
 
@@ -38,18 +67,40 @@ class SpotifyAuthManager:
             "Authorization": f"Basic {self.usercreds}",
         }
 
-        retries = 3
-        delay = 3
+        retries = self.RETRIES
+        delay = self.RETRY_DELAY
 
         for attempt in range(retries):
             try:
                 response = requests.post(
                     token_url, data=token_data, headers=token_headers)
+
+                # The reason lives in the body, not the status line. Without
+                # this the 2026-08-16 outage showed only "400 Bad Request"
+                # while the body said the refresh token had been revoked.
+                if response.status_code >= 400:
+                    logging.error(
+                        "Auth token request failed: HTTP %d, body: %s",
+                        response.status_code, response.text.strip())
+
+                    if self._is_permanent_failure(response):
+                        logging.error(
+                            "Spotify rejected the refresh token itself, so "
+                            "retrying cannot help. Re-authorize the app and "
+                            "update SPOTIFY_REFRESH_TOKEN. Note Spotify "
+                            "expires refresh tokens 6 months after "
+                            "authorization.")
+                        self.token = None
+                        self.expiry = 0
+                        self.rejected_at = time.time()
+                        return
+
                 response.raise_for_status()
                 token_info = response.json()
                 self.token = token_info["access_token"]
                 expires_in = token_info.get("expires_in", 3600)
                 self.expiry = time.time() + expires_in - 60  # Refresh 1 min before expiry
+                self.rejected_at = 0
                 logging.info("Successfully retrieved Spotify auth token.")
                 return
 
@@ -64,6 +115,23 @@ class SpotifyAuthManager:
                         "Exceeded maximum retries for Spotify auth token request.")
                     self.token = None
                     self.expiry = 0
+
+    @staticmethod
+    def _is_permanent_failure(response):
+        """Whether Spotify rejected the credentials rather than glitching
+
+        invalid_grant means the refresh token is expired or revoked;
+        invalid_client means the client id/secret are wrong. Neither is fixed
+        by trying again.
+        """
+        try:
+            error = (response.json() or {}).get("error")
+        except ValueError:
+            return False
+        # The error field is a string on this endpoint, but be defensive.
+        if isinstance(error, dict):
+            error = error.get("message")
+        return error in ("invalid_grant", "invalid_client")
 
 
 _auth_manager = None
@@ -97,6 +165,12 @@ class SpotifyPlayer:
 
     def _get_headers(self):
         token = self.auth_manager.get_token()
+        if not token:
+            # Previously this sent "Bearer None" and let Spotify reject it,
+            # which buried the real cause under a 401 from whichever call
+            # happened to be next.
+            raise SpotifyAuthError(
+                "No Spotify access token available; re-authorization needed")
         return {"Authorization": f"Bearer {token}"}
 
     def _device_url(self, endpoint):
