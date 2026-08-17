@@ -566,15 +566,19 @@ def test_playlist_offset_is_absolute_across_pages(monkeypatch):
     with patch.dict('sys.modules', {'utils': MagicMock()}):
         from spotify import SpotifyPlayer
         p = SpotifyPlayer("rfid123", None, "spotify:playlist:abc")
+        limit = SpotifyPlayer.PAGE_LIMIT
         page1 = _page([{"track": {"uri": "spotify:track:%d" % i}}
-                       for i in range(100)], has_next=True)
+                       for i in range(limit)], has_next=True)
         page2 = _page([{"track": {"uri": "spotify:track:other"}},
                        {"track": {"uri": "spotify:track:want"}}])
         with patch.object(p.auth_manager, "get_token", return_value="tok"), \
-                patch('spotify.requests.get', side_effect=[page1, page2]):
-            # Second entry of the second page -> 100 + 1, not 1.
+                patch('spotify.requests.get', side_effect=[page1, page2]) as mock_get:
+            # Second entry of the second page -> limit + 1, not 1.
             assert p._get_track_position_in_playlist(
-                "abc", "spotify:track:want") == 101
+                "abc", "spotify:track:want") == limit + 1
+            # /albums/{id}/tracks rejects limit > 50, so never exceed it.
+            for call in mock_get.call_args_list:
+                assert call.kwargs["params"]["limit"] <= 50
 
 def test_missing_track_falls_back_to_zero(monkeypatch):
     monkeypatch.setenv("SPOTIFY_DEVICE_ID", "test_device")

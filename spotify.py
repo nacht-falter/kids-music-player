@@ -460,10 +460,16 @@ class SpotifyPlayer:
 
         return self._persist_state(self.playback_state)
 
+    # /albums/{id}/tracks rejects anything above 50 with "Invalid limit", while
+    # /playlists/{id}/tracks allows 100. Using the lower bound for both keeps
+    # one code path; the extra request on long playlists is irrelevant here,
+    # since this only runs on a card switch or shutdown.
+    PAGE_LIMIT = 50
+
     def _find_track_index(self, url, track_uri, uri_of):
         """Absolute index of track_uri within a paginated context listing"""
         headers = self._get_headers()
-        params = {"limit": 100, "offset": 0}
+        params = {"limit": self.PAGE_LIMIT, "offset": 0}
 
         while True:
             response = requests.get(url, headers=headers, params=params)
