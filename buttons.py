@@ -1,5 +1,6 @@
 import logging
 import sqlite3
+import threading
 
 import utils
 
@@ -15,6 +16,11 @@ except ImportError:
 
 
 class ButtonHandler:
+    # How long a shutdown confirmation stays armed. Without a timeout the first
+    # press arms the device indefinitely, so an accidental press hours earlier
+    # turns the next one into an immediate shutdown with no confirmation.
+    SHUTDOWN_CONFIRM_TIMEOUT = 5
+
     def __init__(self, get_player, set_player, database_url, player_lock, reset_last_activity):
         if not Button:
             raise RuntimeError(
@@ -24,6 +30,10 @@ class ButtonHandler:
         self.set_player = set_player
         self.last_button = None
         self.consecutive_presses = 0
+        # Guards the press counter only. Deliberately not player_lock: the
+        # shutdown branch calls utils.shutdown() while holding that one.
+        self.confirm_lock = threading.Lock()
+        self.confirm_timer = None
         self.database_url = database_url
         self.player_lock = player_lock
         self.reset_last_activity = reset_last_activity
@@ -48,25 +58,58 @@ class ButtonHandler:
                 "previous_track"
             )
 
+    def _arm_confirmation_timeout(self):
+        """Disarm the shutdown confirmation if no second press follows"""
+        with self.confirm_lock:
+            if self.confirm_timer:
+                self.confirm_timer.cancel()
+            self.confirm_timer = threading.Timer(
+                self.SHUTDOWN_CONFIRM_TIMEOUT, self._expire_confirmation)
+            self.confirm_timer.daemon = True
+            self.confirm_timer.start()
+
+    def _expire_confirmation(self):
+        with self.confirm_lock:
+            self.confirm_timer = None
+            if self.last_button == "shutdown":
+                logging.info(
+                    "Shutdown confirmation expired without a second press.")
+                self.last_button = None
+                self.consecutive_presses = 0
+
+    def _clear_confirmation(self):
+        with self.confirm_lock:
+            if self.confirm_timer:
+                self.confirm_timer.cancel()
+                self.confirm_timer = None
+            self.last_button = None
+            self.consecutive_presses = 0
+
     def handle_buttons(self, button):
         self.reset_last_activity()
 
-        if self.last_button == button:
-            self.consecutive_presses += 1
-        else:
-            self.last_button = button
-            self.consecutive_presses = 1
+        with self.confirm_lock:
+            if self.last_button == button:
+                self.consecutive_presses += 1
+            else:
+                self.last_button = button
+                self.consecutive_presses = 1
+            presses = self.consecutive_presses
 
         if button == "shutdown":
             with self.player_lock:
-                if self.consecutive_presses == 1:
+                # `>= 2` rather than `== 2`: a rapid third press used to match
+                # neither branch, leaving the button dead until a different one
+                # was pressed.
+                if presses >= 2:
+                    self._clear_confirmation()
+                    logging.info("Shutdown confirmed. Shutting down.")
+                    utils.shutdown(self.get_player())
+                else:
                     logging.info(
                         "Shutdown button pressed once. Confirming shutdown.")
                     utils.play_sound("confirm_shutdown")
-                elif self.consecutive_presses == 2:
-                    self.consecutive_presses = 0
-                    logging.info("Shutdown confirmed. Shutting down.")
-                    utils.shutdown(self.get_player())
+                    self._arm_confirmation_timeout()
 
         elif button == "toggle_playback":
             with self.player_lock:
