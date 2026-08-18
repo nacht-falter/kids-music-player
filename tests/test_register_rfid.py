@@ -107,3 +107,71 @@ def test_title_input_defaults_to_suggestion():
 def test_title_input_allows_override():
     with patch("builtins.input", return_value="My Own Title"):
         assert reg.get_title_input("Suggested") == "My Own Title"
+
+
+# --- series registration -----------------------------------------------------
+
+def _tracks_page(album_ids, nxt=None):
+    response = MagicMock(status_code=200)
+    response.raise_for_status.return_value = None
+    response.json.return_value = {
+        "items": [{"track": {"album": {"uri": f"spotify:album:{a}",
+                                       "name": f"Folge {a}"}}}
+                  for a in album_ids],
+        "next": nxt,
+    }
+    return response
+
+
+class TestSeriesRegistration:
+    def test_episodes_are_grouped_by_album(self):
+        with patch("register_rfid.requests.get",
+                   return_value=_tracks_page(["a", "a", "b"])):
+            episodes = reg.playlist_episodes("tok", "pl1")
+
+        assert [e["uri"] for e in episodes] == ["spotify:album:a",
+                                                "spotify:album:b"]
+        assert episodes[0]["tracks"] == 2
+
+    def test_pagination_is_followed(self):
+        with patch("register_rfid.requests.get",
+                   side_effect=[_tracks_page(["a"], nxt="more"),
+                                _tracks_page(["b"])]):
+            episodes = reg.playlist_episodes("tok", "pl1")
+
+        assert len(episodes) == 2
+
+    def test_a_confirmed_playlist_is_accepted(self):
+        episodes = [{"uri": "spotify:album:a", "name": "Folge 1", "tracks": 2}]
+        with patch("builtins.input", side_effect=[
+                "https://open.spotify.com/playlist/pl1", "y"]), \
+                patch.object(reg, "playlist_episodes", return_value=episodes):
+            location, title = reg.choose_spotify_series("tok")
+
+        assert location == "spotify:playlist:pl1"
+        assert title == "Folge 1"
+
+    def test_an_album_link_is_rejected(self):
+        """A series card needs a playlist, not a single album"""
+        with patch("builtins.input", side_effect=[
+                "spotify:album:abc", "q"]):
+            assert reg.choose_spotify_series("tok") == (None, None)
+
+    def test_declining_the_episode_list_asks_again(self):
+        """The confirmation is the point: a bad playlist gets caught here"""
+        episodes = [{"uri": "spotify:album:a", "name": "Folge 1", "tracks": 1}]
+        with patch("builtins.input", side_effect=[
+                "spotify:playlist:pl1", "n", "q"]), \
+                patch.object(reg, "playlist_episodes", return_value=episodes):
+            assert reg.choose_spotify_series("tok") == (None, None)
+
+    def test_an_empty_playlist_is_rejected(self):
+        with patch("builtins.input", side_effect=["spotify:playlist:pl1", "q"]), \
+                patch.object(reg, "playlist_episodes", return_value=[]):
+            assert reg.choose_spotify_series("tok") == (None, None)
+
+    def test_without_credentials_the_link_is_still_accepted(self):
+        with patch("builtins.input", side_effect=["spotify:playlist:pl1"]):
+            location, title = reg.choose_spotify_series(None)
+        assert location == "spotify:playlist:pl1"
+        assert title is None

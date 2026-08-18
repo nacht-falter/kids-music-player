@@ -304,6 +304,22 @@ class SpotifyPlayer:
         playback = self.check_playback_status()
         return playback is not None and self.active_device == self.device_id
 
+    def _context_uri(self):
+        """The Spotify context this card plays
+
+        A hook rather than self.location directly, so a series card can play
+        the album of its current episode while location stays the playlist.
+        """
+        return self.location
+
+    def _owned_contexts(self):
+        """Every context that counts as this card's own playback
+
+        A set so a series card can own each of its episodes' albums. Keep it
+        exact: this is what stops foreign content being adopted.
+        """
+        return {self.location}
+
     def owns_playback(self, playback):
         """Whether the current playback is this device playing our own album
 
@@ -314,7 +330,7 @@ class SpotifyPlayer:
             return False
         device_id = (playback.get("device") or {}).get("id")
         context_uri = (playback.get("context") or {}).get("uri")
-        return device_id == self.device_id and context_uri == self.location
+        return device_id == self.device_id and context_uri in self._owned_contexts()
 
     # A track may legitimately report slightly past its own end between the
     # last tick and the track change, so allow a little slack before calling a
@@ -413,6 +429,10 @@ class SpotifyPlayer:
                 f"{self.base_url}/me/player", headers=self._get_headers())
             if response.status_code == 204:
                 self.active_device = None
+                # Nothing is playing anywhere. Leaving the cached flag alone
+                # kept it True after playback stopped, so callers reasoning
+                # about whether we are still playing read stale state.
+                self.playing = False
                 return None
             response.raise_for_status()
             playback = response.json()
@@ -438,7 +458,7 @@ class SpotifyPlayer:
         position_ms = self.playback_state.get("position_ms", 0)
 
         data = {
-            "context_uri": self.location,
+            "context_uri": self._context_uri(),
             "offset": {"position": position},
             "position_ms": position_ms,
         }
@@ -567,7 +587,7 @@ class SpotifyPlayer:
 
     def restart_playback(self):
         url = self._device_url("play")
-        data = {"context_uri": self.location,
+        data = {"context_uri": self._context_uri(),
                 "offset": {"position": 0}, "position_ms": 0}
         try:
             response = requests.put(
@@ -727,3 +747,204 @@ class SpotifyPlayer:
 
         if audible:
             utils.play_sound("playback_error")
+
+
+class SpotifySeriesPlayer(SpotifyPlayer):
+    """A card whose location is a playlist of episodes, one album per episode
+
+    Audio dramas publish each episode as its own Spotify album. A playlist of
+    those albums, curated by hand, is the series definition: the order is
+    explicit, so nothing has to be inferred from album titles. Episode
+    boundaries come from album identity, which every playlist track carries.
+
+    Playback uses the *album* of the current episode as its context, never the
+    playlist. That is what makes an episode stop at its own end instead of
+    rolling into the next one, with no timer to schedule and no boundary to
+    race - and it lets resume inside an episode reuse the inherited
+    offset/position logic untouched.
+    """
+
+    # How close to the end of an episode's last track still counts as
+    # finished. The position is only sampled every STATE_REFRESH_INTERVAL
+    # seconds, so the last sample before the end can be well short of it.
+    FINISHED_TOLERANCE_MS = 45000
+
+    def __init__(self, rfid, playback_state, location):
+        super().__init__(rfid, playback_state, location)
+        self.playlist_id = location.split(":")[-1]
+        self.episodes = self._load_episodes()
+
+        index = self.playback_state.get("episode", 0)
+        if not isinstance(index, int) or not 0 <= index < len(self.episodes):
+            # The playlist may have been edited since we last played, or this
+            # is the first ever scan. Either way, start at the beginning
+            # rather than addressing an episode that is not there.
+            if index:
+                logging.warning(
+                    "Stored episode %r is outside the %d episodes of this "
+                    "series; starting from the first", index, len(self.episodes))
+            index = 0
+        self.episode_index = index
+
+        if self.episodes and self._current_episode_finished():
+            self._advance_episode(+1, reason="the previous episode finished")
+
+        logging.info("Series %s: %d episodes, starting at episode %d",
+                     rfid, len(self.episodes), self.episode_index + 1)
+
+    # --- the series definition -------------------------------------------
+
+    def _load_episodes(self):
+        """Ordered episodes of the playlist, from cache when it is still valid
+
+        Paging an 80-episode playlist is a dozen-odd requests, far too slow to
+        repeat on every scan while a child waits for sound. The playlist's
+        snapshot_id changes whenever it is edited, so one cheap request tells
+        us whether the cached map is still good.
+        """
+        snapshot = self._playlist_snapshot()
+        cached = utils.read_series_cache(self.playlist_id)
+
+        if cached and snapshot and cached.get("snapshot_id") == snapshot:
+            return cached.get("episodes", [])
+
+        try:
+            episodes = self._fetch_episodes()
+        except (requests.RequestException, ValueError) as e:
+            self.handle_exception("Reading the series playlist failed", e)
+            # A stale map beats no map: the playlist changed, but the episodes
+            # we knew about are still playable.
+            return cached.get("episodes", []) if cached else []
+
+        if episodes and snapshot:
+            utils.write_series_cache(self.playlist_id, snapshot, episodes)
+        return episodes
+
+    def _playlist_snapshot(self):
+        try:
+            response = requests.get(
+                f"{self.base_url}/playlists/{self.playlist_id}",
+                headers=self._get_headers(),
+                params={"fields": "snapshot_id"})
+            response.raise_for_status()
+            return (response.json() or {}).get("snapshot_id")
+        except requests.RequestException as e:
+            self.handle_exception("Reading the playlist snapshot failed", e)
+            return None
+
+    def _fetch_episodes(self):
+        """Group the playlist's tracks into episodes by album identity
+
+        A run of consecutive tracks sharing an album is one episode. Runs
+        rather than a plain grouping, so a playlist that revisits an album
+        later gets two episodes rather than one interleaved mess.
+        """
+        url = f"{self.base_url}/playlists/{self.playlist_id}/tracks"
+        headers = self._get_headers()
+        params = {"limit": self.PAGE_LIMIT, "offset": 0}
+        episodes = []
+
+        while True:
+            response = requests.get(url, headers=headers, params=params)
+            response.raise_for_status()
+            page = response.json()
+
+            for entry in page.get("items", []):
+                track = entry.get("track") or {}
+                album = track.get("album") or {}
+                uri = album.get("uri")
+                if not uri:
+                    # Removed tracks, local files and podcast episodes all
+                    # arrive without a usable album.
+                    continue
+
+                if not episodes or episodes[-1]["uri"] != uri:
+                    episodes.append({"uri": uri,
+                                     "title": album.get("name"),
+                                     "durations": []})
+                episodes[-1]["durations"].append(track.get("duration_ms") or 0)
+
+            if not page.get("next"):
+                return episodes
+            params["offset"] += params["limit"]
+
+    # --- where we are in the series ---------------------------------------
+
+    def current_episode(self):
+        if not self.episodes:
+            return None
+        return self.episodes[self.episode_index]
+
+    def _current_episode_finished(self):
+        """Whether the stored position sits at the end of the current episode
+
+        Checked when the player is built - that is, on a card scan - so no
+        polling is needed to notice an episode ended.
+        """
+        episode = self.current_episode()
+        if not episode:
+            return False
+
+        durations = episode.get("durations") or []
+        track = (self.playback_state.get("offset") or {}).get("position", 0)
+        if track < len(durations) - 1:
+            return False
+        if not durations:
+            return False
+
+        position_ms = self.playback_state.get("position_ms", 0)
+        remaining = durations[-1] - position_ms
+        return remaining <= self.FINISHED_TOLERANCE_MS
+
+    def _advance_episode(self, step, reason):
+        """Move by whole episodes, wrapping so a card never goes dead"""
+        if not self.episodes:
+            return
+        previous = self.episode_index
+        self.episode_index = (self.episode_index + step) % len(self.episodes)
+        self.playback_state = {"episode": self.episode_index,
+                               "offset": {"position": 0},
+                               "position_ms": 0}
+        logging.info("Episode %d -> %d (%s): %s", previous + 1,
+                     self.episode_index + 1, reason,
+                     (self.current_episode() or {}).get("title"))
+
+    def next_episode(self):
+        self._advance_episode(+1, reason="next episode")
+        self.play()
+
+    def previous_episode(self):
+        self._advance_episode(-1, reason="previous episode")
+        self.play()
+
+    # --- overrides --------------------------------------------------------
+
+    def _context_uri(self):
+        episode = self.current_episode()
+        # Falling back to the playlist keeps a series with an unreadable
+        # definition playable, rather than silent.
+        return episode["uri"] if episode else self.location
+
+    def _owned_contexts(self):
+        """Every episode album, so ownership survives an episode change
+
+        Still exact: a podcast pushed from a phone is not in this set, so it
+        is never adopted.
+        """
+        if not self.episodes:
+            return {self.location}
+        return {episode["uri"] for episode in self.episodes}
+
+    def _state_from_playback(self, playback):
+        state = super()._state_from_playback(playback)
+        state["episode"] = self.episode_index
+        return state
+
+    def _persist_state(self, state):
+        # save_playback_state() rebuilds the state dict from scratch and would
+        # otherwise drop the episode, silently resetting the child to the
+        # first one on the next scan.
+        state = dict(state or {})
+        state["episode"] = self.episode_index
+        self.playback_state = state
+        return super()._persist_state(state)

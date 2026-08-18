@@ -79,6 +79,81 @@ def album_details(token, album_id, market="DE"):
     return response.json()
 
 
+def playlist_episodes(token, playlist_id):
+    """The episodes of a series playlist: runs of tracks sharing an album
+
+    Mirrors SpotifySeriesPlayer._fetch_episodes so registration shows exactly
+    what the device will play. Returns None if the playlist cannot be read.
+    """
+    url = f"https://api.spotify.com/v1/playlists/{playlist_id}/tracks"
+    headers = {"Authorization": f"Bearer {token}"}
+    params = {"limit": 50, "offset": 0, "market": "DE"}
+    episodes = []
+
+    while True:
+        try:
+            response = requests.get(url, headers=headers, params=params)
+            response.raise_for_status()
+            page = response.json()
+        except requests.RequestException as e:
+            print(f"Could not read the playlist: {e}")
+            return None
+
+        for entry in page.get("items", []):
+            album = ((entry.get("track") or {}).get("album") or {})
+            uri = album.get("uri")
+            if not uri:
+                continue
+            if not episodes or episodes[-1]["uri"] != uri:
+                episodes.append({"uri": uri, "name": album.get("name"),
+                                 "tracks": 0})
+            episodes[-1]["tracks"] += 1
+
+        if not page.get("next"):
+            return episodes
+        params["offset"] += params["limit"]
+
+
+def choose_spotify_series(token):
+    """Take a playlist link and confirm the episodes it resolves to
+
+    A mis-curated playlist is far cheaper to catch here than after a child has
+    met it, so the resolved episode list is always shown before saving.
+    """
+    print("\nPaste the link to the playlist holding the episodes, in order.")
+    print("Each episode should be a whole album added to the playlist.")
+
+    while True:
+        text = input("Playlist link (or 'q' to quit): ").strip()
+        if text.lower() == 'q':
+            return None, None
+
+        location = normalize_spotify_location(text)
+        if not location or not location.startswith("spotify:playlist:"):
+            print("That is not a Spotify playlist link. Try again.")
+            continue
+
+        if not token:
+            print("No Spotify credentials, so the episodes cannot be listed.")
+            return location, None
+
+        episodes = playlist_episodes(token, location.split(":")[-1])
+        if episodes is None:
+            continue
+        if not episodes:
+            print("That playlist has no album tracks in it.")
+            continue
+
+        print(f"\nFound {len(episodes)} episodes:")
+        for number, episode in enumerate(episodes, start=1):
+            print(f"  {number:>3}. {episode['name']} "
+                  f"({episode['tracks']} tracks)")
+
+        if input("\nIs that the right series? [y/N]: ").strip().lower() == 'y':
+            return location, episodes[0]["name"]
+        print("Fix the playlist in Spotify, then paste the link again.")
+
+
 def choose_spotify_album(token):
     """Resolve an album by search or pasted link
 
@@ -164,6 +239,8 @@ def register_rfid(api_url, headers):
     suggested_title = None
     if source == "spotify":
         location, suggested_title = choose_spotify_album(spotify_app_token())
+    elif source == "spotify_series":
+        location, suggested_title = choose_spotify_series(spotify_app_token())
     else:
         location = get_location_input(source)
     if not location:
@@ -250,19 +327,22 @@ def handle_existing_rfid(api_url, headers, rfid):
 def get_source_input():
     """Get and validate source input."""
     print("\nSelect source:")
-    print("  s) Spotify")
+    print("  s) Spotify album")
+    print("  e) Spotify series (a playlist of episodes, one album each)")
     print("  l) Local files")
 
     while True:
-        source = input("Enter choice [s/l] (or 'q' to quit): ").strip().lower()
+        source = input("Enter choice [s/e/l] (or 'q' to quit): ").strip().lower()
         if source == 'q':
             return None
         elif source in ('s', 'spotify'):
             return 'spotify'
+        elif source in ('e', 'series', 'spotify_series'):
+            return 'spotify_series'
         elif source in ('l', 'local'):
             return 'local'
         else:
-            print("Invalid choice. Please enter 's' for Spotify or 'l' for local.")
+            print("Invalid choice. Please enter 's', 'e' or 'l'.")
 
 
 def get_location_input(source):

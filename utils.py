@@ -13,6 +13,46 @@ except ImportError:
     led = None
 
 
+# Where the resolved episode list for a series playlist is cached. Beside the
+# database by default, so it lives with the rest of the device's state.
+SERIES_CACHE_PATH = os.environ.get("SERIES_CACHE", "series_cache.json")
+
+
+def read_series_cache(playlist_id):
+    """The cached episode map for a playlist, or None
+
+    Best-effort by design: a missing, unreadable or corrupt cache just means
+    the map gets fetched again, which is slower but always correct.
+    """
+    try:
+        with open(SERIES_CACHE_PATH) as cache_file:
+            return json.load(cache_file).get(playlist_id)
+    except (OSError, ValueError) as e:
+        logging.debug("No usable series cache: %s", e)
+        return None
+
+
+def write_series_cache(playlist_id, snapshot_id, episodes):
+    """Record the episode map, keyed by the playlist's snapshot
+
+    Written only when the playlist actually changes, so this costs a handful
+    of flash writes a year rather than one per scan.
+    """
+    try:
+        try:
+            with open(SERIES_CACHE_PATH) as cache_file:
+                cache = json.load(cache_file)
+        except (OSError, ValueError):
+            cache = {}
+
+        cache[playlist_id] = {"snapshot_id": snapshot_id, "episodes": episodes}
+        with open(SERIES_CACHE_PATH, "w") as cache_file:
+            json.dump(cache, cache_file)
+    except OSError as e:
+        # Losing the cache costs speed on the next scan, nothing else.
+        logging.warning("Could not write the series cache: %s", e)
+
+
 def persist_playback_state(rfid, playback_state):
     """Write playback state for an RFID to the database
 
@@ -61,13 +101,16 @@ def create_player(music_data, retries=10, delay=1):
 
     logging.info("Creating player for RFID %s", rfid)
 
-    if source == "spotify":
+    if source in ("spotify", "spotify_series"):
         # Lazy import to avoid circular dependency
-        from spotify import SpotifyAuthError, SpotifyPlayer
+        from spotify import (SpotifyAuthError, SpotifyPlayer,
+                             SpotifySeriesPlayer)
+        player_class = (SpotifySeriesPlayer if source == "spotify_series"
+                        else SpotifyPlayer)
 
         for attempt in range(retries):
             try:
-                player = SpotifyPlayer(rfid, playback_state, location)
+                player = player_class(rfid, playback_state, location)
                 transferred = player.transfer_playback(play=False)
             except SpotifyAuthError as e:
                 if e.permanent:

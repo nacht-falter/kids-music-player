@@ -5,6 +5,7 @@ import sqlite3
 import pytest
 from unittest.mock import patch, MagicMock
 from utils import get_music_data, create_player, play_sound, save_last_played, get_last_played_rfid, handle_already_playing, shutdown, verify_env_file
+import utils
 
 def setup_in_memory_db():
     db = sqlite3.connect(":memory:")
@@ -339,3 +340,52 @@ def test_create_player_retries_when_the_token_is_merely_unavailable(monkeypatch)
         assert create_player(music_data, retries=6) is None
 
     assert attempts["n"] == 6, "should use the whole budget, not abort"
+
+
+# --- series episode cache ----------------------------------------------------
+
+class TestSeriesCache:
+    """Paging a long series is too slow to repeat on every scan
+
+    Keyed by the playlist's snapshot_id, which Spotify changes whenever the
+    playlist is edited, so a stale map is never served.
+    """
+
+    def test_round_trip(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(utils, "SERIES_CACHE_PATH",
+                            str(tmp_path / "series.json"))
+        episodes = [{"uri": "spotify:album:a", "durations": [1000]}]
+        utils.write_series_cache("pl1", "snap1", episodes)
+
+        cached = utils.read_series_cache("pl1")
+        assert cached == {"snapshot_id": "snap1", "episodes": episodes}
+
+    def test_unknown_playlist_returns_none(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(utils, "SERIES_CACHE_PATH",
+                            str(tmp_path / "series.json"))
+        utils.write_series_cache("pl1", "snap1", [])
+        assert utils.read_series_cache("other") is None
+
+    def test_several_playlists_coexist(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(utils, "SERIES_CACHE_PATH",
+                            str(tmp_path / "series.json"))
+        utils.write_series_cache("pl1", "snap1", [{"uri": "a"}])
+        utils.write_series_cache("pl2", "snap2", [{"uri": "b"}])
+
+        assert utils.read_series_cache("pl1")["snapshot_id"] == "snap1"
+        assert utils.read_series_cache("pl2")["snapshot_id"] == "snap2"
+
+    def test_missing_file_is_not_an_error(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(utils, "SERIES_CACHE_PATH",
+                            str(tmp_path / "absent.json"))
+        assert utils.read_series_cache("pl1") is None
+
+    def test_corrupt_cache_is_not_an_error(self, tmp_path, monkeypatch):
+        """Refetching is slower but always correct; crashing is not an option"""
+        path = tmp_path / "series.json"
+        path.write_text("{ this is not json")
+        monkeypatch.setattr(utils, "SERIES_CACHE_PATH", str(path))
+
+        assert utils.read_series_cache("pl1") is None
+        utils.write_series_cache("pl1", "snap1", [{"uri": "a"}])
+        assert utils.read_series_cache("pl1")["snapshot_id"] == "snap1"
