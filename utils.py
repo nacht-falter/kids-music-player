@@ -115,6 +115,10 @@ def play_sound(event, blocking=False):
         "next_track": "click",
         "previous_track": "click",
         "toggle_playback": "click",
+        # The IR remote has volume keys; toem2 has a hardware pot and no need
+        # for these. Files were already in sounds/ from the bash version.
+        "volume_up": "volup",
+        "volume_down": "voldown",
         "confirm_shutdown": "confirm_shutdown",
         "shutdown": "shutdown",
         "playback_error": "playback_error"

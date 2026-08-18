@@ -97,6 +97,41 @@ normalisation_pregain = 10
 device_type = "speaker"
 ```
 
+#### Obtaining `credentials.json`
+
+The `username_cmd` above reads a credentials file that spotifyd **cannot create for itself** on
+0.3.x. Pairing from a phone over Zeroconf authenticates fine, but the credentials are never written
+to disk, so the next restart falls back to `no usable credentials found, enabling discovery`
+(Spotifyd [issue #1212](https://github.com/Spotifyd/spotifyd/issues/1212)). Spotify has also removed
+username/password login, so there is no way to configure it directly.
+
+Generate the file with spotifyd **0.4.x** on any machine — a laptop will do — and copy it to the
+device:
+
+```bash
+# on a machine running spotifyd 0.4.x
+spotifyd authenticate                 # browser OAuth flow
+#   -> ~/.cache/spotifyd/oauth/credentials.json
+# or start spotifyd with no credentials and pick it in the Spotify app
+#   -> ~/.cache/spotifyd/zeroconf/credentials.json
+
+# copy to the device; 0.3.x expects it flat, not in a subdirectory
+scp ~/.cache/spotifyd/zeroconf/credentials.json <host>:~/.cache/spotifyd/credentials.json
+ssh <host> chmod 600 ~/.cache/spotifyd/credentials.json
+```
+
+The blob is `{username, auth_type, auth_data}` and is tied to the **account, not the device**, which
+is why copying it between machines works. [librespot-auth](https://github.com/dspearson/librespot-auth)
+does the same job if you have no 0.4.x install, but it needs a Rust toolchain on a matching
+architecture.
+
+`SPOTIFY_DEVICE_ID` is `sha1(device_name)`, so it does not change when you switch accounts — only
+the refresh token does:
+
+```bash
+echo -n "device_name" | sha1sum
+```
+
 Test your configuration:
 
 ```bash
@@ -143,6 +178,11 @@ sudo systemctl --user start spotifyd
    URL instead; it has to match the authorize request byte for byte.
 
 #### Step 2: Get Your Refresh Token
+
+**This section is for first-time setup only.** Once a device has a working `.env`,
+use `reauth.py` instead (see below) — it does all of this for you and validates the
+result before writing anything.
+
 You can use this online helper tool to get a refresh token: [https://johannesbernet.com/spotify/auth](https://johannesbernet.com/spotify/auth)
 
 *Note: This tool is completely client-side - your credentials are not stored on the server.*
@@ -219,6 +259,24 @@ matters because a token issued to the wrong account authenticates perfectly and 
 with an empty device list and cards that silently do nothing.
 
 It backs up `.env`, records `SPOTIFY_AUTH_DATE`, and restarts the service.
+
+**You will still land on the callback page** — it is the registered `redirect_uri`, so
+every authorization ends there, including `reauth.py`'s. Ignore the `curl` command it
+offers and paste the code (or the whole address bar) back into `reauth.py`.
+
+Running that `curl` yourself would also produce a valid refresh token, but you would then
+be editing `.env` by hand and skipping the two checks that matter: that the token belongs
+to the account `spotifyd` is signed in as, and that the device appears in that account's
+device list. A token for the wrong account authenticates perfectly and fails only later,
+with an empty device list and cards that silently do nothing. You would also miss
+`SPOTIFY_AUTH_DATE`, which is what drives the expiry warning.
+
+#### Which flow do I need?
+
+| Situation | Use |
+|---|---|
+| New device, no `.env` yet | the helper page, then `setup_env.py` |
+| Existing device, token expired or revoked | `python reauth.py --host <ssh-host>` |
 
 ### 5. Get your Spotifyd device ID:
 

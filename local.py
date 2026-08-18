@@ -5,6 +5,9 @@ import re
 
 
 class AudioPlayer:
+    # See SpotifyPlayer.RESTART_THRESHOLD_MS.
+    RESTART_THRESHOLD_SECONDS = 3
+
     def __init__(self, rfid, playback_state, location):
         self.rfid = rfid
         self.playback_state = (
@@ -48,9 +51,30 @@ class AudioPlayer:
         logging.info("Next track")
 
     def previous_track(self):
+        # Same rule as SpotifyPlayer: past the first few seconds, restart the
+        # current track instead of skipping back.
+        if self._elapsed_seconds() > self.RESTART_THRESHOLD_SECONDS:
+            os.system("mpc -q seek 0")
+            self.playing = True
+            logging.info("Restarted the current track")
+            return
+
         os.system("mpc -q prev")
         self.playing = True
         logging.info("Previous track")
+
+    def _elapsed_seconds(self):
+        """Seconds into the current track, or 0 if it cannot be read"""
+        try:
+            status = os.popen("mpc status").readlines()
+            if len(status) < 2:
+                return 0
+            # e.g. "[playing] #3/12   0:07/3:21 (3%)"
+            match = re.search(r"(\d+):(\d\d)/", status[1])
+            return int(match.group(1)) * 60 + int(match.group(2)) if match else 0
+        except Exception as e:
+            logging.debug("Could not read elapsed time: %s", e)
+            return 0
 
     def restart_playback(self):
         self.playback_state = {"track": 1, "position": "0%"}

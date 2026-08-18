@@ -7,10 +7,10 @@ import time
 
 from dotenv import load_dotenv
 
+import buttons
 import db_setup
 import spotify
 import utils
-from buttons import ButtonHandler
 from remote_sync import schedule_sync
 from rfid import RfidReader
 
@@ -115,18 +115,30 @@ class RFIDMusicPlayer:
 
     def setup_hardware(self):
         """Setup hardware components (buttons, RFID reader)."""
+        handler_type = os.getenv("BUTTON_HANDLER", "gpio")
+
+        # Create button handler
         try:
-            self.button_handler = ButtonHandler(
+            self.button_handler = buttons.create_button_handler(
+                handler_type,
                 self.get_player,
                 self.set_player,
                 self.database_url,
                 self.player_lock,
                 self.reset_last_activity
             )
-        except RuntimeError as e:
-            logging.warning(e)
+        except ValueError as e:
+            # An unrecognised BUTTON_HANDLER is a configuration mistake, not a
+            # missing device: say so clearly rather than crashing at startup.
+            logging.error("%s. Set BUTTON_HANDLER to 'gpio' or 'ir'.", e)
+        except (RuntimeError, FileNotFoundError) as e:
+            logging.warning("Input handler setup failed: %s", e)
 
-        self.rfid_reader = RfidReader()
+        # Create rfid reader
+        try:
+            self.rfid_reader = RfidReader()
+        except (ValueError, FileNotFoundError) as e:
+            logging.error(f"Failed to initialize RFID reader: {e}")
 
     def get_player(self):
         """Get the current player instance."""
@@ -232,8 +244,8 @@ class RFIDMusicPlayer:
                     finally:
                         if self.player:
                             self.player.play()
-                            if self.button_handler:
-                                self.button_handler.set_player(self.player)
+                            # No need to hand the player to the input handler:
+                            # it reads the live one through get_player().
                         else:
                             # create_player also returns None without raising,
                             # once it has exhausted its retries. That used to

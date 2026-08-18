@@ -140,3 +140,21 @@ def test_save_playback_state(tmp_path, monkeypatch):
     assert result[0] is not None, "playback_state was not persisted"
     # Both values come from the same mocked os.popen().read()
     assert json.loads(result[0]) == {"track": "3", "position": "3"} 
+
+def test_previous_restarts_the_track_when_past_the_threshold():
+    """Same rule as SpotifyPlayer, via mpc"""
+    player = AudioPlayer("rfid1", None, "/music/track1.mp3")
+    with patch("os.popen") as mock_popen, patch("os.system") as mock_system:
+        mock_popen.return_value.readlines.return_value = [
+            "Some Track", "[playing] #3/12   0:47/3:21 (23%)"]
+        player.previous_track()
+    mock_system.assert_called_with("mpc -q seek 0")
+
+
+def test_previous_skips_back_near_the_start():
+    player = AudioPlayer("rfid1", None, "/music/track1.mp3")
+    with patch("os.popen") as mock_popen, patch("os.system") as mock_system:
+        mock_popen.return_value.readlines.return_value = [
+            "Some Track", "[playing] #3/12   0:01/3:21 (0%)"]
+        player.previous_track()
+    mock_system.assert_called_with("mpc -q prev")
