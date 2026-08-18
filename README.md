@@ -97,6 +97,41 @@ normalisation_pregain = 10
 device_type = "speaker"
 ```
 
+#### Obtaining `credentials.json`
+
+The `username_cmd` above reads a credentials file that spotifyd **cannot create for itself** on
+0.3.x. Pairing from a phone over Zeroconf authenticates fine, but the credentials are never written
+to disk, so the next restart falls back to `no usable credentials found, enabling discovery`
+(Spotifyd [issue #1212](https://github.com/Spotifyd/spotifyd/issues/1212)). Spotify has also removed
+username/password login, so there is no way to configure it directly.
+
+Generate the file with spotifyd **0.4.x** on any machine — a laptop will do — and copy it to the
+device:
+
+```bash
+# on a machine running spotifyd 0.4.x
+spotifyd authenticate                 # browser OAuth flow
+#   -> ~/.cache/spotifyd/oauth/credentials.json
+# or start spotifyd with no credentials and pick it in the Spotify app
+#   -> ~/.cache/spotifyd/zeroconf/credentials.json
+
+# copy to the device; 0.3.x expects it flat, not in a subdirectory
+scp ~/.cache/spotifyd/zeroconf/credentials.json <host>:~/.cache/spotifyd/credentials.json
+ssh <host> chmod 600 ~/.cache/spotifyd/credentials.json
+```
+
+The blob is `{username, auth_type, auth_data}` and is tied to the **account, not the device**, which
+is why copying it between machines works. [librespot-auth](https://github.com/dspearson/librespot-auth)
+does the same job if you have no 0.4.x install, but it needs a Rust toolchain on a matching
+architecture.
+
+`SPOTIFY_DEVICE_ID` is `sha1(device_name)`, so it does not change when you switch accounts — only
+the refresh token does:
+
+```bash
+echo -n "device_name" | sha1sum
+```
+
 Test your configuration:
 
 ```bash
