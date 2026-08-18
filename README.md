@@ -464,6 +464,11 @@ want one — Spotify app → Share → Copy Spotify URI — it looks like
 `spotify:album:<22-character id>`, and both tools also accept the
 `https://open.spotify.com/album/<id>?si=...` link that "Copy link" gives you.
 
+A card can hold an **album** or a **playlist**; both play as one context, straight through,
+and both resume where the child stopped. The URI says which it is, so they share a source.
+A playlist used as a series behaves differently and is described below. As with a series,
+a playlist has to be public to be readable by a player signed in as another account.
+
 ### Audiobook Series
 
 Audio dramas usually publish each episode as its own Spotify album, so a card pointing at
