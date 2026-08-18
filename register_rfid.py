@@ -96,7 +96,11 @@ def playlist_episodes(token, playlist_id):
             response.raise_for_status()
             page = response.json()
         except requests.RequestException as e:
+            # Spotify answers 404 for a playlist the caller may not see, so a
+            # private one looks exactly like a missing one from here.
             print(f"Could not read the playlist: {e}")
+            print("If it exists, check that it is public - this lookup uses "
+                  "app-only credentials, which cannot see private playlists.")
             return None
 
         for entry in page.get("items", []):
@@ -122,6 +126,8 @@ def choose_spotify_series(token):
     """
     print("\nPaste the link to the playlist holding the episodes, in order.")
     print("Each episode should be a whole album added to the playlist.")
+    print("The playlist must be PUBLIC: a private one is invisible to any")
+    print("account other than its owner, including the players'.")
 
     while True:
         text = input("Playlist link (or 'q' to quit): ").strip()

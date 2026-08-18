@@ -464,6 +464,33 @@ want one — Spotify app → Share → Copy Spotify URI — it looks like
 `spotify:album:<22-character id>`, and both tools also accept the
 `https://open.spotify.com/album/<id>?si=...` link that "Copy link" gives you.
 
+### Audiobook Series
+
+Audio dramas usually publish each episode as its own Spotify album, so a card pointing at
+one album is one episode forever. A **series card** points instead at a playlist holding
+the episodes, each added as a whole album, in the order they should be played.
+
+The device recovers the episode boundaries from album identity — every playlist track
+carries the album it came from — and plays one episode at a time, using that episode's
+album as the playback context. So an episode stops at its own end rather than running into
+the next, the next scan starts the following episode, and the series wraps round to the
+first once the last one finishes. Stopping part way through and rescanning resumes where
+the child left off, as with any card.
+
+Buttons keep skipping tracks, since the tracks within an episode are chapters. Pressing
+next or previous **twice in quick succession** moves a whole episode.
+
+**The playlist must be public.** Spotify makes a private playlist visible only to the
+account that owns it, so a private one cannot be read by a player signed in as a different
+account, nor by the registration tools, which use app-only credentials. Spotify answers
+`404` in that case, indistinguishable from a playlist that does not exist.
+
+The order is whatever you put in the playlist: nothing is inferred from album titles.
+That is deliberate — series numbering on Spotify is not reliable enough to guess from. One
+real example: the artist "Pumuckl" has 132 albums covering two different series that both
+number their episodes from 01, plus compilations and a 2008 Christmas run that reuses the
+numbers 01–06 of the 1982 original.
+
 ### Register RFID Cards
 
 Both options below talk to your own sync API (see step 10) — there is no shared service,
