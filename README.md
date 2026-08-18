@@ -12,6 +12,20 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
+**On a Raspberry Pi, create the venv with `--system-site-packages` instead:**
+
+```bash
+sudo apt-get install python3-rpi.gpio python3-gpiozero
+python3 -m venv --system-site-packages venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+`RPi.GPIO` (LED) and `gpiozero` (buttons) are deliberately **not** in `requirements.txt` — they are
+Pi-only and come from apt. A plain venv hides them, and because both imports are guarded, the LED
+and buttons then silently do nothing rather than reporting an error. If you recreate the venv,
+reinstall `requirements.txt` afterwards: recreating discards everything pip put there.
+
 ### 2. Install and Configure MPD/MPC
 
 ```bash

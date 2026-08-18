@@ -117,6 +117,16 @@ class RFIDMusicPlayer:
         """Setup hardware components (buttons, RFID reader)."""
         handler_type = os.getenv("BUTTON_HANDLER", "gpio")
 
+        if led is None:
+            # Silence here once cost an evening: the LED simply never lit, with
+            # nothing in the log to say why. RPi.GPIO is installed system-wide
+            # on the Pi, so a venv built without --system-site-packages hides
+            # it and the import guard turns that into a no-op.
+            logging.warning(
+                "LED support unavailable (could not import led). On a Pi this "
+                "usually means the venv was created without "
+                "--system-site-packages, so the system RPi.GPIO is not visible.")
+
         # Create button handler
         try:
             self.button_handler = buttons.create_button_handler(
