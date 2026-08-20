@@ -224,6 +224,20 @@ def handle_already_playing(player):
     player.check_playback_status()
 
     if player.playing:
+        # Re-scanning a playing card means "go round again". For an album
+        # that is the start of the album; for a series it is the next
+        # episode, wrapping past the last one. Same gesture, same idea - the
+        # series simply has more than one place to go, so this is consistent
+        # with existing behaviour rather than a special case.
+        #
+        # It also replaces the double button press, whose timing could not be
+        # measured: the IR reader blocks on the Spotify call, so the "gap"
+        # between presses was really the API round-trip (TODO 30). A scan is a
+        # discrete event and needs no window at all.
+        if getattr(player, "is_series", False):
+            logging.info("Already playing a series. Advancing an episode.")
+            player.next_episode()
+            return
         logging.info("Already playing. Restarting playback.")
         player.restart_playback()
     else:

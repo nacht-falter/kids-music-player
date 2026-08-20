@@ -134,6 +134,7 @@ def test_get_last_played_none():
 
 def test_handle_already_playing_restart():
     player = MagicMock()
+    player.is_series = False
     player.playing = True
     handle_already_playing(player)
     player.restart_playback.assert_called_once()
@@ -254,6 +255,7 @@ def test_create_player_still_retries_transient_failures(monkeypatch):
 def test_handle_already_playing_refreshes_before_branching():
     """A stale `playing` flag sent a dead device down the restart path"""
     player = MagicMock()
+    player.is_series = False
     player.playing = True
     handle_already_playing(player)
     player.check_playback_status.assert_called_once()
@@ -262,6 +264,7 @@ def test_handle_already_playing_refreshes_before_branching():
 def test_handle_already_playing_uses_refreshed_value():
     """check_playback_status may flip `playing`; the branch must follow it"""
     player = MagicMock()
+    player.is_series = False
     player.playing = True
 
     def refresh():
@@ -389,3 +392,39 @@ class TestSeriesCache:
         assert utils.read_series_cache("pl1") is None
         utils.write_series_cache("pl1", "snap1", [{"uri": "a"}])
         assert utils.read_series_cache("pl1")["snapshot_id"] == "snap1"
+
+
+def test_rescanning_a_playing_series_advances_an_episode():
+    """Re-scanning means "go round again" - the next episode for a series"""
+    player = MagicMock()
+    player.is_series = True
+    player.playing = True
+
+    handle_already_playing(player)
+
+    player.next_episode.assert_called_once()
+    player.restart_playback.assert_not_called()
+
+
+def test_rescanning_a_playing_album_still_restarts():
+    """The same gesture, for a card with only one place to go"""
+    player = MagicMock()
+    player.is_series = False
+    player.playing = True
+
+    handle_already_playing(player)
+
+    player.restart_playback.assert_called_once()
+    player.next_episode.assert_not_called()
+
+
+def test_rescanning_a_paused_series_resumes_rather_than_advancing():
+    """Pausing and scanning again must not cost the child their episode"""
+    player = MagicMock()
+    player.is_series = True
+    player.playing = False
+
+    handle_already_playing(player)
+
+    player.toggle_playback.assert_called_once()
+    player.next_episode.assert_not_called()

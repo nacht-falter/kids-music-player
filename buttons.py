@@ -38,11 +38,6 @@ class PlayerActionHandler:
         # For shutdown confirmation and consecutive actions
         self.last_action = None
         self.consecutive_count = 0
-        # When the last two presses arrived, so a double press can be told
-        # from two deliberate ones. Kept here rather than folded into
-        # consecutive_count, whose 5s shutdown window must not change.
-        self.last_action_at = 0.0
-        self.previous_action_at = 0.0
         self.shutdown_lock = threading.Lock()
         self.confirm_timer = None
 
@@ -64,10 +59,6 @@ class PlayerActionHandler:
 
     def handle_action(self, action):
         self.reset_last_activity()
-
-        now = time.monotonic()
-        self.previous_action_at = self.last_action_at
-        self.last_action_at = now
 
         if self.last_action == action:
             self.consecutive_count += 1
@@ -133,46 +124,15 @@ class PlayerActionHandler:
                 utils.play_sound("toggle_playback")
                 self._create_and_play_last_player()
 
-    # A second press this soon after the first means "change episode" rather
-    # than "skip another track". Deliberately short: a child skipping chapters
-    # presses at a human pace, around a second or more apart, while a double
-    # tap is fast. This window is the whole defence against confusing the two,
-    # so it is the first thing to tune if the kids trip over it.
-    DOUBLE_PRESS_WINDOW = 0.6
-
-    def _is_double_press(self):
-        """Whether this press closely followed another of the same action"""
-        if self.consecutive_count < 2:
-            return False
-        gap = self.last_action_at - self.previous_action_at
-        return gap <= self.DOUBLE_PRESS_WINDOW
-
-    def _episode_jump(self, player, step):
-        """Move a whole episode, if this card is a series. True if it did.
-
-        Acts on the first press immediately and lets the second supersede it,
-        rather than delaying every single press to see whether another is
-        coming - that would tax skipping a chapter, which is the common case,
-        to serve the rare one.
-        """
-        jump = getattr(player, "next_episode" if step > 0 else "previous_episode",
-                       None)
-        if not callable(jump) or not self._is_double_press():
-            return False
-
-        # Start counting afresh, so a third press is a single press again
-        # instead of jumping once more.
-        self.consecutive_count = 0
-        self.last_action = None
-        jump()
-        return True
+    # Buttons are track-level only. Changing episode used to be a double press,
+    # but the gap it measured was the Spotify round-trip rather than the
+    # interval between presses (TODO 30), so it fired at random. Re-scanning
+    # the card advances an episode instead - a discrete event with no window.
 
     def _handle_next_track(self):
         with self.player_lock:
             player = self.get_player()
             if player:
-                if self._episode_jump(player, +1):
-                    return
                 logging.info("Next track action triggered.")
                 utils.play_sound("next_track")
                 player.next_track()
@@ -185,8 +145,6 @@ class PlayerActionHandler:
         with self.player_lock:
             player = self.get_player()
             if player:
-                if self._episode_jump(player, -1):
-                    return
                 logging.info("Previous track action triggered.")
                 utils.play_sound("previous_track")
                 player.previous_track()

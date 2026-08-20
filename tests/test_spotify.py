@@ -1159,3 +1159,22 @@ class TestPositionDriftAgainstMonotonic:
 
         assert state["position_ms"] == 47000
         assert player.last_good_position == (47000, 2002.0, "track2")
+
+
+class TestSeriesCapabilityFlag:
+    """utils.handle_already_playing branches on is_series, so the real classes
+    must carry it. Mocks set it by hand, which hid a missing flag entirely:
+    deleting it from SpotifySeriesPlayer left the whole suite green."""
+
+    def test_a_plain_player_is_not_a_series(self, monkeypatch):
+        monkeypatch.setenv("SPOTIFY_DEVICE_ID", "test_device")
+        with patch.dict('sys.modules', {'utils': MagicMock()}):
+            from spotify import SpotifyPlayer
+        assert SpotifyPlayer.is_series is False
+
+    def test_a_series_player_is_a_series(self, monkeypatch):
+        monkeypatch.setenv("SPOTIFY_DEVICE_ID", "test_device")
+        with patch.dict('sys.modules', {'utils': MagicMock()}):
+            from spotify import SpotifySeriesPlayer
+        assert SpotifySeriesPlayer.is_series is True
+

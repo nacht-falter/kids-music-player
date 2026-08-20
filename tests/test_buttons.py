@@ -369,14 +369,16 @@ def test_volume_down_at_zero_refuses():
     u.play_sound.assert_called_once_with("error")
 
 
-# --- double press changes episode -------------------------------------------
+# --- buttons are track-level only ----------------------------------------
 
-class TestDoublePressEpisode:
-    """A second press within the window means episode, not another track
+class TestButtonsNeverChangeEpisode:
+    """Changing episode is a card re-scan now, not a double press
 
-    The risk this trades against: a child pressing next repeatedly to skip
-    chapters must not land in a different episode. The window is short so
-    deliberate presses, which run about a second apart, stay track-level.
+    The old gesture compared timestamps taken in handle_action, but the IR
+    reader blocks on the Spotify call, so what it actually measured was the
+    API round-trip (TODO 30). It fired at random. The tests that covered it
+    passed only because they patched buttons.time.monotonic, mocking away the
+    very thing that broke it.
     """
 
     def _series_player(self):
@@ -385,64 +387,32 @@ class TestDoublePressEpisode:
         player.previous_episode = MagicMock()
         return player
 
-    def _album_player(self):
-        """A plain album card has no episode methods at all"""
-        return MagicMock(spec=["next_track", "previous_track"])
-
     def _press(self, handler, player, action, at):
         handler.get_player = MagicMock(return_value=player)
         with patch("buttons.time.monotonic", return_value=at), \
                 patch("buttons.utils"):
             handler.handle_action(action)
 
-    def test_two_fast_presses_change_episode(self, handler):
+    def test_fast_presses_skip_tracks_not_episodes(self, handler):
         player = self._series_player()
         self._press(handler, player, "next_track", 100.0)
         self._press(handler, player, "next_track", 100.3)
 
-        player.next_episode.assert_called_once()
-        # The first press already skipped a track; the second supersedes it.
-        assert player.next_track.call_count == 1
+        assert player.next_track.call_count == 2
+        player.next_episode.assert_not_called()
 
-    def test_two_slow_presses_skip_two_tracks(self, handler):
-        """Chapter skipping at a human pace must stay chapter skipping"""
+    def test_slow_presses_skip_tracks_too(self, handler):
         player = self._series_player()
         self._press(handler, player, "next_track", 100.0)
         self._press(handler, player, "next_track", 101.5)
 
-        player.next_episode.assert_not_called()
         assert player.next_track.call_count == 2
+        player.next_episode.assert_not_called()
 
-    def test_a_third_press_starts_fresh(self, handler):
-        player = self._series_player()
-        self._press(handler, player, "next_track", 100.0)
-        self._press(handler, player, "next_track", 100.3)
-        player.next_track.reset_mock()
-
-        self._press(handler, player, "next_track", 100.5)
-        # Counting restarted, so this is a single press again.
-        player.next_track.assert_called_once()
-        assert player.next_episode.call_count == 1
-
-    def test_previous_double_press_goes_back_an_episode(self, handler):
+    def test_previous_never_changes_episode(self, handler):
         player = self._series_player()
         self._press(handler, player, "previous_track", 50.0)
         self._press(handler, player, "previous_track", 50.2)
 
-        player.previous_episode.assert_called_once()
-
-    def test_album_cards_never_jump_episodes(self, handler):
-        """Only series players expose the episode methods"""
-        player = self._album_player()
-        self._press(handler, player, "next_track", 10.0)
-        self._press(handler, player, "next_track", 10.2)
-
-        assert player.next_track.call_count == 2
-
-    def test_different_actions_do_not_combine(self, handler):
-        player = self._series_player()
-        self._press(handler, player, "next_track", 5.0)
-        self._press(handler, player, "previous_track", 5.2)
-
-        player.next_episode.assert_not_called()
+        assert player.previous_track.call_count == 2
         player.previous_episode.assert_not_called()

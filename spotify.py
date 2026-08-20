@@ -246,6 +246,11 @@ def get_auth_manager():
 class SpotifyPlayer:
     # How far into a track "previous" stops meaning "the previous track" and
     # starts meaning "this one again". 3s is what the bash version used.
+    # Whether re-scanning this card should advance rather than restart.
+    # Explicit rather than probing for a next_episode method, so a test double
+    # cannot accidentally look like a series.
+    is_series = False
+
     RESTART_THRESHOLD_MS = 3000
 
     def __init__(self, rfid, playback_state, location):
@@ -908,6 +913,8 @@ class SpotifySeriesPlayer(SpotifyPlayer):
     race - and it lets resume inside an episode reuse the inherited
     offset/position logic untouched.
     """
+
+    is_series = True
 
     # How close to the end of an episode's last track still counts as
     # finished. The position is only sampled every STATE_REFRESH_INTERVAL
