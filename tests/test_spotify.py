@@ -918,3 +918,244 @@ class TestImpossiblePositions:
 
         persist.assert_called_once_with({"offset": {"position": 1},
                                          "position_ms": 13038})
+
+
+class TestPositionDiagnostics:
+    """The warning has to carry enough evidence to diagnose the next sighting
+
+    This has fired twice in the wild and reproduced on the bench zero times:
+    neither a stale clock at boot nor a mid-session step of the same magnitude
+    corrupted progress_ms on the deployed spotifyd. So the log line is the
+    investigation, and the discrepancy against the monotonic clock is the part
+    that actually distinguishes the theories.
+    """
+
+    ITEM = {"id": "track1", "duration_ms": 183794, "uri": "spotify:track:t"}
+
+    def _player(self, monkeypatch):
+        monkeypatch.setenv("SPOTIFY_DEVICE_ID", "test_device")
+        with patch.dict('sys.modules', {'utils': MagicMock()}):
+            from spotify import SpotifyPlayer
+            return SpotifyPlayer("rfid123", None, "spotify:album:123")
+
+    def _playback(self, progress_ms):
+        return {"item": self.ITEM, "progress_ms": progress_ms,
+                "is_playing": True, "timestamp": 1787147489761,
+                "context": {"uri": "spotify:album:123"},
+                "device": {"id": "test_device"}}
+
+    def test_discrepancy_is_measured_against_the_monotonic_clock(
+            self, monkeypatch):
+        """The one measurement librespot's clock cannot distort"""
+        player = self._player(monkeypatch)
+
+        with patch("spotify.time.monotonic", return_value=1000.0):
+            player._note_good_position(self._playback(30000), 30000)
+
+        # 10s of real time later, the device claims to be 15 minutes behind.
+        with patch("spotify.time.monotonic", return_value=1010.0):
+            line = player._position_diagnostics(self._playback(-880706),
+                                                -880706)
+
+        assert "monotonic_elapsed_ms=10000" in line
+        assert "expected_ms=40000" in line
+        assert "discrepancy_ms=-920706" in line
+
+    def test_diagnostics_survive_having_no_anchor_yet(self, monkeypatch):
+        """The first reading of a session can be the bad one"""
+        player = self._player(monkeypatch)
+
+        line = player._position_diagnostics(self._playback(-880706), -880706)
+
+        assert "last_good_ms=none" in line
+        assert "discrepancy_ms" not in line
+
+    def test_diagnostics_include_the_context_for_the_theories_on_the_table(
+            self, monkeypatch):
+        """uptime distinguishes "just booted" from "hours in"; api_timestamp
+        is what Spotify itself thinks; system_clock catches a stepped clock."""
+        player = self._player(monkeypatch)
+
+        line = player._position_diagnostics(self._playback(-880706), -880706)
+
+        for field in ("reported_ms=-880706", "api_timestamp=1787147489761",
+                      "system_clock=", "monotonic=", "uptime_s=",
+                      "track=track1", "duration_ms=183794", "is_playing=True"):
+            assert field in line, f"{field} missing from: {line}"
+
+    def test_an_accepted_reading_becomes_the_anchor(self, monkeypatch):
+        player = self._player(monkeypatch)
+        player.owns_playback = lambda playback: True
+
+        player._state_from_playback(self._playback(13038))
+
+        assert player.last_good_position is not None
+        assert player.last_good_position[0] == 13038
+
+    def test_a_rejected_reading_does_not_become_the_anchor(self, monkeypatch):
+        """Otherwise the anchor is poisoned and the discrepancy reads zero"""
+        player = self._player(monkeypatch)
+        player.owns_playback = lambda playback: True
+        with patch("spotify.time.monotonic", return_value=1000.0):
+            player._note_good_position(self._playback(30000), 30000)
+
+        player._state_from_playback(self._playback(-880706))
+
+        assert player.last_good_position == (30000, 1000.0, "track1")
+
+
+class TestPositionDriftAgainstMonotonic:
+    """A clock step smaller than the track is invisible to the bounds check
+
+    Every corruption caught in the wild so far has been negative, which the
+    bounds check already rejects. The same step lands inside [0, duration]
+    whenever it is smaller than the track, and then it reads as an entirely
+    ordinary position - the child simply resumes somewhere they never were.
+    time.monotonic() is the one reference a stepped clock cannot move.
+    """
+
+    ITEM = {"id": "track1", "duration_ms": 183794, "uri": "spotify:track:t"}
+    OTHER = {"id": "track2", "duration_ms": 200000, "uri": "spotify:track:u"}
+
+    def _player(self, monkeypatch):
+        monkeypatch.setenv("SPOTIFY_DEVICE_ID", "test_device")
+        with patch.dict('sys.modules', {'utils': MagicMock()}):
+            from spotify import SpotifyPlayer
+            player = SpotifyPlayer("rfid123", None, "spotify:album:123")
+        player.owns_playback = lambda playback: True
+        player.playback_state = {"offset": {"position": 0}, "position_ms": 30000}
+        return player
+
+    def _playback(self, progress_ms, item=None, is_playing=True):
+        return {"item": item if item is not None else self.ITEM,
+                "progress_ms": progress_ms, "is_playing": is_playing,
+                "timestamp": 1787147489761,
+                "context": {"uri": "spotify:album:123"},
+                "device": {"id": "test_device"}}
+
+    def _anchor(self, player, position_ms, at=1000.0):
+        with patch("spotify.time.monotonic", return_value=at):
+            player._note_good_position(self._playback(position_ms), position_ms)
+
+    def test_a_position_inside_the_track_but_wrong_is_rejected(
+            self, monkeypatch):
+        """The whole point: bounds cannot see this, elapsed time can"""
+        player = self._player(monkeypatch)
+        self._anchor(player, 30000)
+
+        # 10s later the device reports 29s earlier than it should - still a
+        # perfectly legal position inside a 183s track.
+        with patch("spotify.time.monotonic", return_value=1010.0):
+            state = player._state_from_playback(self._playback(11000))
+
+        assert player._position_is_impossible(11000, self.ITEM) is False
+        assert state["position_ms"] == 30000
+
+    def test_a_position_matching_elapsed_time_is_accepted(self, monkeypatch):
+        player = self._player(monkeypatch)
+        self._anchor(player, 30000)
+
+        with patch("spotify.time.monotonic", return_value=1010.0):
+            state = player._state_from_playback(self._playback(40000))
+
+        assert state["position_ms"] == 40000
+
+    def test_ordinary_round_trip_lag_is_not_drift(self, monkeypatch):
+        """Measured live at ~520ms; the tolerance has to clear it easily"""
+        player = self._player(monkeypatch)
+        self._anchor(player, 30000)
+
+        with patch("spotify.time.monotonic", return_value=1010.0):
+            state = player._state_from_playback(self._playback(39400))
+
+        assert state["position_ms"] == 39400
+
+    def test_a_track_change_stands_the_check_down(self, monkeypatch):
+        """A new track legitimately resets the position to near zero"""
+        player = self._player(monkeypatch)
+        self._anchor(player, 170000)
+
+        with patch("spotify.time.monotonic", return_value=1010.0):
+            state = player._state_from_playback(
+                self._playback(2000, item=self.OTHER))
+
+        assert state["position_ms"] == 2000
+
+    def test_a_paused_reading_stands_the_check_down(self, monkeypatch):
+        """Position stands still while monotonic time keeps moving"""
+        player = self._player(monkeypatch)
+        self._anchor(player, 30000)
+
+        with patch("spotify.time.monotonic", return_value=1100.0):
+            state = player._state_from_playback(
+                self._playback(30000, is_playing=False))
+
+        assert state["position_ms"] == 30000
+
+    def test_a_pause_drops_the_anchor(self, monkeypatch):
+        """Else the pause itself reads as drift once playback resumes"""
+        player = self._player(monkeypatch)
+        self._anchor(player, 30000)
+        assert player.last_good_position is not None
+
+        player._note_good_position(
+            self._playback(30000, is_playing=False), 30000)
+
+        assert player.last_good_position is None
+
+    def test_a_skip_drops_the_anchor(self, monkeypatch):
+        """Otherwise the jump the skip caused reads as a clock step"""
+        player = self._player(monkeypatch)
+        player.ensure_owns_playback = lambda action: True
+        self._anchor(player, 30000)
+
+        with patch("spotify.requests.post") as post:
+            post.return_value = MagicMock(raise_for_status=lambda: None)
+            player.next_track()
+
+        assert player.last_good_position is None
+
+    def test_no_anchor_means_no_opinion(self, monkeypatch):
+        """The first reading of a session has nothing to be checked against"""
+        player = self._player(monkeypatch)
+        player.last_good_position = None
+
+        state = player._state_from_playback(self._playback(11000))
+
+        assert state["position_ms"] == 11000
+
+    def test_play_anchors_on_the_position_it_asked_for(self, monkeypatch):
+        """A session can begin already poisoned, so the first reading back is
+        not evidence of anything - observed in the wild, where impossible
+        readings continued through three consecutive fresh play() calls."""
+        player = self._player(monkeypatch)
+        player.playback_state = {"offset": {"position": 0},
+                                 "position_ms": 45000}
+
+        with patch("spotify.requests.put") as put, \
+                patch("spotify.time.monotonic", return_value=2000.0):
+            put.return_value = MagicMock(raise_for_status=lambda: None)
+            player.play()
+
+        assert player.last_good_position == (45000, 2000.0, None)
+
+        # The device answers 40s adrift, comfortably inside the track. The
+        # requested position is what catches it.
+        with patch("spotify.time.monotonic", return_value=2002.0):
+            state = player._state_from_playback(self._playback(7000))
+
+        assert state["position_ms"] == 45000
+
+    def test_an_anchor_from_a_request_accepts_whatever_track_replies(
+            self, monkeypatch):
+        """play() asks for an offset, not a track id, so the first reading
+        defines which track the anchor belongs to."""
+        player = self._player(monkeypatch)
+        player.last_good_position = (45000, 2000.0, None)
+
+        with patch("spotify.time.monotonic", return_value=2002.0):
+            state = player._state_from_playback(
+                self._playback(47000, item=self.OTHER))
+
+        assert state["position_ms"] == 47000
+        assert player.last_good_position == (47000, 2002.0, "track2")

@@ -264,6 +264,11 @@ class SpotifyPlayer:
         self.playing = False
         self.active_device = None
         self.playback_started = False
+        # (position_ms, time.monotonic()) of the last reading we believed.
+        # Purely diagnostic today: it lets an impossible position be compared
+        # against how much time really elapsed, which is the one measurement
+        # librespot's clock cannot distort.
+        self.last_good_position = None
         logging.info("SpotifyPlayer initialized for RFID %s", rfid)
 
     def _get_headers(self):
@@ -337,6 +342,97 @@ class SpotifyPlayer:
     # position impossible.
     POSITION_GRACE_MS = 5000
 
+    # How far a reported position may disagree with the monotonic clock before
+    # it is treated as a clock artefact rather than real playback. Observed
+    # jitter (the request round-trip, the server's own extrapolation) sits
+    # around half a second; the smallest real fault seen in the wild was 37s.
+    POSITION_DRIFT_TOLERANCE_MS = 5000
+
+    def _note_good_position(self, playback, position_ms):
+        """Anchor a position we accepted against the monotonic clock
+
+        Only a playing position anchors. A paused player's position stands
+        still while monotonic time keeps moving, so anchoring one would make
+        the pause itself look like drift and reject everything after it.
+        """
+        if not playback.get("is_playing"):
+            self.last_good_position = None
+            return
+        track_id = (playback.get("item") or {}).get("id")
+        self.last_good_position = (position_ms, time.monotonic(), track_id)
+
+    def _note_intended_position(self, position_ms):
+        """Anchor on the position we asked for, not one we were told
+
+        The corruption survives a fresh play() - observed in the wild, with
+        impossible readings continuing through three consecutive restarts - so
+        a session can begin already poisoned. Anchoring on the first reading
+        back would adopt that poison as truth and accept everything after it.
+        What we requested is known to be right, and monotonic time from the
+        request onward is all that is needed to police it.
+
+        The track is left unknown: we asked for an offset, not an id, so the
+        first reading defines it.
+        """
+        self.last_good_position = (position_ms, time.monotonic(), None)
+
+    def _forget_good_position(self):
+        """Drop the anchor because playback is about to move on purpose
+
+        A skip or a resume severs the relationship between elapsed time and
+        where playback should be, and unlike play() we cannot say where it
+        landed. Without this the first reading afterwards looks exactly like
+        a clock jump and would be thrown away. Moves whose destination we do
+        know use _note_intended_position() instead.
+        """
+        self.last_good_position = None
+
+    def _position_diagnostics(self, playback, position_ms):
+        """Everything needed to diagnose a bad position after the fact
+
+        The trigger is a systemd-timesyncd step: on this RTC-less Pi every
+        boot starts on a restored fake-hwclock stamp, time-sync.target is
+        reached before NTP has actually answered, and the real correction
+        lands 42-89s later - by which time a child is usually listening.
+        Confirmed against five separate clusters, each beginning within
+        seconds of an "Initial synchronization to time server" line, each
+        offset by exactly the size of the step.
+
+        Kept because the offset, its sign and the uptime are what identify a
+        recurrence as this and not something new.
+        """
+        item = playback.get("item") or {}
+        fields = [
+            f"reported_ms={position_ms}",
+            f"api_timestamp={playback.get('timestamp')}",
+            f"system_clock={datetime.datetime.now().isoformat(timespec='seconds')}",
+            f"monotonic={time.monotonic():.1f}",
+            f"is_playing={playback.get('is_playing')}",
+            f"track={item.get('id')}",
+            f"duration_ms={item.get('duration_ms')}",
+            f"context={(playback.get('context') or {}).get('uri')}",
+        ]
+
+        try:
+            with open("/proc/uptime") as fh:
+                fields.append(f"uptime_s={float(fh.read().split()[0]):.0f}")
+        except OSError:
+            pass
+
+        if self.last_good_position:
+            good_ms, good_mono, _ = self.last_good_position
+            elapsed_ms = (time.monotonic() - good_mono) * 1000
+            # If the clock were honest these two would match. The gap is the
+            # size of the distortion, and its sign says which way.
+            fields.append(f"last_good_ms={good_ms}")
+            fields.append(f"monotonic_elapsed_ms={elapsed_ms:.0f}")
+            fields.append(f"expected_ms={good_ms + elapsed_ms:.0f}")
+            fields.append(f"discrepancy_ms={position_ms - (good_ms + elapsed_ms):.0f}")
+        else:
+            fields.append("last_good_ms=none")
+
+        return " ".join(fields)
+
     @staticmethod
     def _position_is_impossible(position_ms, item):
         """Whether a reported position cannot correspond to real playback
@@ -357,6 +453,40 @@ class SpotifyPlayer:
         return bool(duration_ms
                     and position_ms > duration_ms + SpotifyPlayer.POSITION_GRACE_MS)
 
+    def _position_contradicts_elapsed(self, playback, position_ms):
+        """Whether a position disagrees with how much time has actually passed
+
+        The bounds check above only sees a position outside the track. A clock
+        step smaller than the track duration lands inside those bounds and
+        reads as entirely ordinary - the child simply resumes somewhere they
+        never were. time.monotonic() cannot be stepped, so it is the one
+        reference that still holds when the wall clock moves.
+
+        Deliberately silent unless nothing else could explain the gap. The
+        anchor is dropped on every pause, skip and resume, and a track change
+        is checked here, so a surviving anchor means uninterrupted playback of
+        one track - and then reported position and elapsed time must agree.
+        """
+        if not playback.get("is_playing") or not self.last_good_position:
+            return False
+
+        good_ms, good_mono, good_track = self.last_good_position
+        if (good_track is not None
+                and good_track != (playback.get("item") or {}).get("id")):
+            return False
+
+        elapsed_ms = (time.monotonic() - good_mono) * 1000
+        drift_ms = position_ms - (good_ms + elapsed_ms)
+        return abs(drift_ms) > self.POSITION_DRIFT_TOLERANCE_MS
+
+    def _position_rejection_reason(self, playback, position_ms, item):
+        """Why a reported position cannot be trusted, or None if it can"""
+        if self._position_is_impossible(position_ms, item):
+            return "impossible"
+        if self._position_contradicts_elapsed(playback, position_ms):
+            return "drifted"
+        return None
+
     def _state_from_playback(self, playback):
         """Cheap position snapshot taken from a playback payload
 
@@ -370,13 +500,17 @@ class SpotifyPlayer:
         context_parts = context_uri.split(":") if context_uri else []
 
         position_ms = playback.get("progress_ms", 0)
-        if self._position_is_impossible(position_ms, item):
+        reason = self._position_rejection_reason(playback, position_ms, item)
+        if reason:
             # Keep what we had rather than recording a position that cannot be
             # real; a clock jump must not cost the child their place.
             logging.warning(
-                "Ignoring impossible playback position %s ms for RFID %s",
-                position_ms, self.rfid)
+                "Ignoring %s playback position for RFID %s: %s",
+                reason, self.rfid,
+                self._position_diagnostics(playback, position_ms))
             return dict(self.playback_state)
+
+        self._note_good_position(playback, position_ms)
 
         if (len(context_parts) == 3 and context_parts[1] == "album"
                 and (item.get("disc_number") or 1) <= 1):
@@ -470,6 +604,7 @@ class SpotifyPlayer:
             self.playing = True
             self.playback_started = True
             self.active_device = self.device_id
+            self._note_intended_position(position_ms)
             logging.info(
                 "Started playback from beginning at position %d (%d ms)", position, position_ms)
         except requests.RequestException as e:
@@ -483,6 +618,7 @@ class SpotifyPlayer:
             self.playing = True
             self.playback_started = True
             self.active_device = self.device_id
+            self._forget_good_position()
             logging.info("Resumed playback on device %s", self.device_id)
         except requests.RequestException as e:
             self.handle_exception("Resuming playback failed", e, audible=True)
@@ -499,6 +635,7 @@ class SpotifyPlayer:
             # press must toggle rather than start the album afresh at the
             # stored position.
             self.playback_started = True
+            self._forget_good_position()
             logging.info("Playback paused")
         except requests.RequestException as e:
             self.handle_exception("Pause failed", e, audible=True)
@@ -545,6 +682,7 @@ class SpotifyPlayer:
             response = requests.post(url, headers=self._get_headers())
             response.raise_for_status()
             self.playing = True
+            self._forget_good_position()
             logging.info("Skipped to next track")
         except requests.RequestException as e:
             self.handle_exception("Next track failed", e, audible=True)
@@ -557,6 +695,7 @@ class SpotifyPlayer:
             response = requests.put(url, headers=self._get_headers())
             response.raise_for_status()
             self.playing = True
+            self._note_intended_position(0)
             logging.info("Restarted the current track")
         except requests.RequestException as e:
             self.handle_exception("Restarting the track failed", e, audible=True)
@@ -581,6 +720,7 @@ class SpotifyPlayer:
             response = requests.post(url, headers=self._get_headers())
             response.raise_for_status()
             self.playing = True
+            self._forget_good_position()
             logging.info("Returned to previous track")
         except requests.RequestException as e:
             self.handle_exception("Previous track failed", e, audible=True)
@@ -594,6 +734,7 @@ class SpotifyPlayer:
                 url, headers=self._get_headers(), json=data)
             response.raise_for_status()
             self.playing = True
+            self._note_intended_position(0)
             logging.info("Playback restarted from beginning")
         except requests.RequestException as e:
             self.handle_exception("Restart failed", e, audible=True)
@@ -628,15 +769,19 @@ class SpotifyPlayer:
         track_uri = item.get("uri")
         offset_position = 0  # fallback default
 
-        if self._position_is_impossible(position_ms, item):
+        reason = self._position_rejection_reason(playback, position_ms, item)
+        if reason:
             # As in _state_from_playback: a clock jump makes the live reading
             # worthless, and the last position we recorded is better than one
             # that cannot be real. Resolving the offset below would also be
             # wasted API calls.
             logging.warning(
-                "Impossible playback position %s ms for RFID %s; keeping the "
-                "last known position", position_ms, self.rfid)
+                "%s playback position for RFID %s; keeping the last known "
+                "position: %s", reason.capitalize(), self.rfid,
+                self._position_diagnostics(playback, position_ms))
             return self._persist_state(self.playback_state)
+
+        self._note_good_position(playback, position_ms)
 
         if not context_uri or not track_uri:
             logging.warning(
