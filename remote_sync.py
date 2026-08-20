@@ -18,11 +18,22 @@ def fetch_remote_items(api_url, headers, last_sync):
 
 
 def fetch_local_items(cursor, last_sync):
+    """Local rows changed since last_sync - i.e. upload candidates.
+
+    Only ever use this to decide what to push. Deciding whether a remote row
+    already exists needs fetch_all_local_items(); see the comment in sync_db.
+    """
     if last_sync:
         cursor.execute(
             "SELECT * FROM music WHERE last_modified > ?", (last_sync,))
     else:
         cursor.execute("SELECT * FROM music")
+    return [dict(row) for row in cursor.fetchall()]
+
+
+def fetch_all_local_items(cursor):
+    """Every local row, regardless of when it last changed."""
+    cursor.execute("SELECT * FROM music")
     return [dict(row) for row in cursor.fetchall()]
 
 
@@ -40,6 +51,7 @@ def sync_db(database_url, sync_done=None, retries=5, delay=5):
         sync_done.clear()
 
     success = False
+    last_error = None
 
     for attempt in range(retries):
         try:
@@ -59,9 +71,20 @@ def sync_db(database_url, sync_done=None, retries=5, delay=5):
                 remote_map = {item["rfid"]: item for item in remote_items}
                 local_items = fetch_local_items(cursor, last_sync)
                 local_map = {item["rfid"]: item for item in local_items}
+                # Existence must be checked against the whole table, not the
+                # delta. A card edited on the server but untouched here is
+                # absent from local_map, so the loop below took it for a new
+                # card and INSERTed a duplicate rfid. That raised "UNIQUE
+                # constraint failed", rolled the transaction back, and took
+                # every genuinely new card in the same batch down with it - so
+                # freshly registered cards stayed unknown on the device
+                # indefinitely, with only "All database sync attempts failed"
+                # to show for it.
+                existing_map = {item["rfid"]: item
+                                for item in fetch_all_local_items(cursor)}
 
                 for rfid, remote_item in remote_map.items():
-                    local_item = local_map.get(rfid)
+                    local_item = existing_map.get(rfid)
                     if not local_item:
                         cursor.execute("""
                             INSERT INTO music (rfid, source, location, title, last_modified)
@@ -116,6 +139,7 @@ def sync_db(database_url, sync_done=None, retries=5, delay=5):
                 success = True
                 break
         except Exception as e:
+            last_error = e
             logging.debug(f"Sync attempt {attempt + 1} failed: {e}")
             if attempt < retries - 1:
                 logging.debug(f"Retrying in {delay} seconds...")
@@ -124,8 +148,12 @@ def sync_db(database_url, sync_done=None, retries=5, delay=5):
         sync_done.set()
 
     if not success:
+        # The reason used to be DEBUG-only, so a device left syncing into a
+        # UNIQUE constraint failure for days reported nothing but this one
+        # unactionable line. Always say why.
         logging.error(
-            "All database sync attempts failed.")
+            "All database sync attempts failed. Last error: %s: %s",
+            type(last_error).__name__, last_error)
 
 
 def schedule_sync(database_url, sync_done=None, retries=5, delay=5, interval=900):
