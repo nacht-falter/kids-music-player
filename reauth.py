@@ -49,18 +49,27 @@ def run(host, command):
 
 
 def read_env(host, env_path):
-    """Parse the target's .env into a dict"""
+    """Parse the target's .env into a dict
+
+    Values may be quoted. A target whose player sources the file with the shell
+    rather than reading it in Python has it written the way a shell script
+    would write it. Accept both, or the base64 credentials come back with the
+    quotes still attached and fail to decode.
+    """
     text = run(host, f"cat {env_path}")
     env = {}
     for line in text.splitlines():
         line = line.strip()
         if line and not line.startswith("#") and "=" in line:
             key, value = line.split("=", 1)
-            env[key.strip()] = value.strip()
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                value = value[1:-1]
+            env[key.strip()] = value
     return env
 
 
-def spotifyd_account(host):
+def spotifyd_account(host, credentials=SPOTIFYD_CREDENTIALS):
     """The Spotify account spotifyd is logged in as, if we can determine it
 
     The token must belong to this account. A token for a different account
@@ -68,7 +77,7 @@ def spotifyd_account(host):
     device and every card silently fails.
     """
     try:
-        raw = run(host, f"cat {SPOTIFYD_CREDENTIALS}")
+        raw = run(host, f"cat {credentials}")
         return json.loads(raw).get("username")
     except Exception as e:  # cache missing, spotifyd never run, bad JSON
         print(f"  ! could not read spotifyd credentials: {e}")
@@ -183,10 +192,18 @@ def update_env(host, env_path, values):
         "lines = open(path).read().splitlines()\n"
         "seen = set()\n"
         "out = []\n"
+        # Keep whatever quoting the line already had: where the .env is sourced
+        # by a shell, silently dropping the quotes would change how that file
+        # parses.
+        "def requote(old, value):\n"
+        "    old = old.split('=', 1)[1].strip()\n"
+        "    if len(old) >= 2 and old[0] == old[-1] and old[0] in '\\\"\\'':\n"
+        "        return old[0] + value + old[0]\n"
+        "    return value\n"
         "for line in lines:\n"
         "    key = line.split('=', 1)[0].strip() if '=' in line else None\n"
         "    if key in values:\n"
-        "        out.append(key + '=' + values[key])\n"
+        "        out.append(key + '=' + requote(line, values[key]))\n"
         "        seen.add(key)\n"
         "    else:\n"
         "        out.append(line)\n"
@@ -207,6 +224,13 @@ def main():
                         help="path to .env on the target")
     parser.add_argument("--service", default="toem",
                         help="systemd service to restart (default: toem)")
+    parser.add_argument("--spotifyd-credentials", default=SPOTIFYD_CREDENTIALS,
+                        help="path to spotifyd's credentials.json on the target")
+    parser.add_argument("--restart-command", default=None,
+                        help="shell command that restarts the player, instead "
+                             "of restarting --service. For targets with no "
+                             "systemd unit, where picking up a new token means "
+                             "restarting something else, or rebooting.")
     parser.add_argument("--dry-run", action="store_true",
                         help="validate but do not write or restart")
     args = parser.parse_args()
@@ -225,7 +249,7 @@ def main():
     except Exception:
         sys.exit("SPOTIFY_USERCREDS is not valid base64 of 'client_id:secret'")
 
-    expected_account = spotifyd_account(args.host)
+    expected_account = spotifyd_account(args.host, args.spotifyd_credentials)
     if expected_account:
         print(f"spotifyd account: {expected_account}")
     else:
@@ -271,7 +295,13 @@ def main():
     expiry = datetime.date.today() + datetime.timedelta(days=183)
     print(f"This token should last until roughly {expiry.isoformat()}.")
 
-    if args.host:
+    if args.restart_command:
+        if args.host:
+            run(args.host, args.restart_command)
+            print(f"Ran: {args.restart_command}")
+        else:
+            print(f"Run `{args.restart_command}` to pick up the new token.")
+    elif args.host:
         run(args.host, f"sudo systemctl restart {args.service}")
         state = run(args.host, f"systemctl is-active {args.service}").strip()
         print(f"Restarted {args.service}: {state}")
