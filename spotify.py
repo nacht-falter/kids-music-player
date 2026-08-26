@@ -630,19 +630,29 @@ class SpotifyPlayer:
 
     def resume_playback(self):
         url = self._device_url("play")
+        verifying = self.resume_needs_verifying()
         try:
             response = requests.put(url, headers=self._get_headers(), json={})
             response.raise_for_status()
-            self.playing = True
-            self.playback_started = True
-            self.active_device = self.device_id
-            self._forget_good_position()
-            logging.info("Resumed playback on device %s", self.device_id)
         except requests.RequestException as e:
             self.handle_exception("Resuming playback failed", e, audible=True)
             return
-        if self.resume_needs_verifying():
+        self.playback_started = True
+        self.active_device = self.device_id
+        self._forget_good_position()
+        if verifying:
+            # Do not claim playback nobody has seen. A 204 means the command
+            # was accepted, and moments after a transfer that is all it means
+            # - so say that, and let the check decide what actually happened.
+            # Reading a log that announces success and then contradicts itself
+            # is worse than reading one that admits it is still looking.
+            logging.info(
+                "Resume accepted by device %s, confirming it started",
+                self.device_id)
             self.verify_after_transfer()
+            return
+        self.playing = True
+        logging.info("Resumed playback on device %s", self.device_id)
 
     def resume_needs_verifying(self):
         """Whether this resume followed a transfer closely enough to doubt it
@@ -671,6 +681,7 @@ class SpotifyPlayer:
         time.sleep(self.VERIFY_DELAY)
         playback = self.check_playback_status()
         if self.playing:
+            logging.info("Resumed playback on device %s", self.device_id)
             return
         logging.warning(
             "Resume after transfer was accepted but nothing is playing; "

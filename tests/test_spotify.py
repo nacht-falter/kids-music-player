@@ -1237,6 +1237,33 @@ class TestResumeAfterTransfer:
         played, _ = self.resume(player, self.playback(is_playing=False))
         played.assert_called_once_with()
 
+    def test_a_resume_that_did_nothing_is_never_logged_as_success(
+            self, monkeypatch, caplog):
+        """The log must not announce playback and then contradict itself"""
+        player = self.player(monkeypatch, transferred_ago=0.5)
+        with caplog.at_level("INFO"):
+            self.resume(player, self.playback(is_playing=False))
+        assert "Resumed playback" not in caplog.text
+        assert "confirming it started" in caplog.text
+        assert "nothing is playing" in caplog.text
+
+    def test_a_verified_resume_is_logged_once_it_is_known(
+            self, monkeypatch, caplog):
+        player = self.player(monkeypatch, transferred_ago=0.5)
+        with caplog.at_level("INFO"):
+            self.resume(player, self.playback(is_playing=True))
+        assert "confirming it started" in caplog.text
+        assert "Resumed playback" in caplog.text
+
+    def test_an_unverified_resume_still_reads_plainly(
+            self, monkeypatch, caplog):
+        """No transfer, nothing to doubt: one line, as before"""
+        player = self.player(monkeypatch)
+        with caplog.at_level("INFO"):
+            self.resume(player, self.playback(is_playing=False))
+        assert "Resumed playback" in caplog.text
+        assert "confirming it started" not in caplog.text
+
     def test_working_resume_sends_nothing_further(self, monkeypatch):
         player = self.player(monkeypatch, transferred_ago=0.5)
         played, _ = self.resume(player, self.playback(is_playing=True))
