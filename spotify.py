@@ -268,11 +268,11 @@ class SpotifyPlayer:
         self.location = location
         self.playing = False
         self.active_device = None
+        # Whether this process has driven playback on this device, and so
+        # knows which context is loaded there. Until it has, the account's
+        # idea of "our album, paused" may describe a device that has been
+        # handed the session and not yet attached to anything.
         self.playback_started = False
-        # time.monotonic() of the last transfer_playback(), or None. A resume
-        # issued moments after a transfer is the one that silently does
-        # nothing - see verify_after_transfer() below.
-        self.transferred_at = None
         # (position_ms, time.monotonic()) of the last reading we believed.
         # Purely diagnostic today: it lets an impossible position be compared
         # against how much time really elapsed, which is the one measurement
@@ -304,7 +304,6 @@ class SpotifyPlayer:
             response = requests.put(
                 url, headers=self._get_headers(), json=data)
             response.raise_for_status()
-            self.transferred_at = time.monotonic()
             logging.info("Playback transferred to device %s", self.device_id)
             return True
         except SpotifyAuthError:
@@ -620,80 +619,25 @@ class SpotifyPlayer:
         except requests.RequestException as e:
             self.handle_exception("Playback failed", e, audible=True)
 
-    # How long after a transfer a resume is still suspect, and how long to
-    # wait before asking whether it worked. The observed failures resumed
-    # 300-500ms after the transfer and were playing again on a press 3.7s
-    # later, so the window is generous and the wait is only long enough for
-    # Spotify to have a new answer.
-    TRANSFER_SETTLE_WINDOW = 10
-    VERIFY_DELAY = 1.5
-
     def resume_playback(self):
+        """Continue what this device is already playing
+
+        Only correct once we know the context is loaded there, which is what
+        playback_started means - see toggle_playback(). A bare resume carries
+        no context of its own: it says "continue whatever is loaded", and a
+        device that has just been handed the session has nothing to continue.
+        """
         url = self._device_url("play")
-        verifying = self.resume_needs_verifying()
         try:
             response = requests.put(url, headers=self._get_headers(), json={})
             response.raise_for_status()
+            self.playing = True
+            self.playback_started = True
+            self.active_device = self.device_id
+            self._forget_good_position()
+            logging.info("Resumed playback on device %s", self.device_id)
         except requests.RequestException as e:
             self.handle_exception("Resuming playback failed", e, audible=True)
-            return
-        self.playback_started = True
-        self.active_device = self.device_id
-        self._forget_good_position()
-        if verifying:
-            # Do not claim playback nobody has seen. A 204 means the command
-            # was accepted, and moments after a transfer that is all it means
-            # - so say that, and let the check decide what actually happened.
-            # Reading a log that announces success and then contradicts itself
-            # is worse than reading one that admits it is still looking.
-            logging.info(
-                "Resume accepted by device %s, confirming it started",
-                self.device_id)
-            self.verify_after_transfer()
-            return
-        self.playing = True
-        logging.info("Resumed playback on device %s", self.device_id)
-
-    def resume_needs_verifying(self):
-        """Whether this resume followed a transfer closely enough to doubt it
-
-        A bare resume carries no context: it means "continue whatever is
-        loaded". Moments after a transfer, spotifyd has been handed the
-        session but has not attached to the context yet, so there is nothing
-        to continue. Spotify still answers 204 and we still believe it.
-
-        Only the post-transfer case pays for the extra round trip. An ordinary
-        unpause is left alone deliberately - the input reader blocks on every
-        Spotify call (TODO 30), so a check on each press would make the device
-        deaf for longer on the path that already works.
-        """
-        return (self.transferred_at is not None
-                and time.monotonic() - self.transferred_at
-                < self.TRANSFER_SETTLE_WINDOW)
-
-    def verify_after_transfer(self):
-        """Confirm the resume actually started, and play our album if not
-
-        HTTP 204 means the command was accepted, not that a sound came out.
-        Falling back to play() is safe precisely here: nothing is playing, so
-        seeking to the stored position cannot interrupt anything.
-        """
-        time.sleep(self.VERIFY_DELAY)
-        playback = self.check_playback_status()
-        if self.playing:
-            logging.info("Resumed playback on device %s", self.device_id)
-            return
-        logging.warning(
-            "Resume after transfer was accepted but nothing is playing; "
-            "starting our album explicitly")
-        if playback is not None and not self.owns_playback(playback):
-            # Something else took the session in the meantime. play() is still
-            # the right call - it names our own context - but say so, because
-            # that is the phone case rather than this race.
-            logging.info(
-                "Reclaiming playback for RFID %s after a failed resume",
-                self.rfid)
-        self.play()
 
     def pause_playback(self):
         if not self.playing:
@@ -719,9 +663,19 @@ class SpotifyPlayer:
 
         if self.playing:
             self.pause_playback()
-        elif self.owns_playback(playback):
-            # Our own album, merely paused - resume in place.
+        elif self.playback_started and self.owns_playback(playback):
+            # Our own album, merely paused, and we are the ones who put it
+            # there - so the device has the context and can continue it.
             self.resume_playback()
+        elif self.owns_playback(playback):
+            # The account says our album is loaded here, but nothing in this
+            # process put it there: the player was rebuilt under a running
+            # spotifyd, or the session was only just transferred. Name the
+            # context rather than asking to continue one that may not be
+            # attached yet. check_playback_status() has just refreshed the
+            # position from the live payload, so this resumes where the story
+            # actually is rather than seeking to the stored position.
+            self.play()
         else:
             # Another device holds the session, or this device was handed
             # foreign content. Reclaim by playing our album explicitly;

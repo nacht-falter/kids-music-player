@@ -1180,50 +1180,44 @@ class TestSeriesCapabilityFlag:
 
 
 
-class TestResumeAfterTransfer:
-    """A bare resume issued moments after a transfer is not to be believed
+class TestResumeNeedsAContextWeLoaded:
+    """A bare resume is only correct once we know what is loaded there
 
-    Observed on toem2 on 2026-08-26: press play after boot, the app transfers
-    the session, resumes 450ms later, Spotify answers 204 - and nothing plays.
-    The identical resume on the next press, 3.7s on, worked. See TODO 29.
+    Observed on toem2 on 2026-08-26: press play after boot, the session is
+    transferred, a bare resume is sent 450ms later, Spotify answers 204 - and
+    nothing plays, because spotifyd has been handed the session and not yet
+    attached to the context. playback_started is what tells the two cases
+    apart, and until now nothing read it.
     """
 
-    def player(self, monkeypatch, transferred_ago=None):
+    def player(self, monkeypatch, playback_started):
         monkeypatch.setenv("SPOTIFY_DEVICE_ID", "test_device")
         with patch.dict('sys.modules', {'utils': MagicMock()}):
             from spotify import SpotifyPlayer
             player = SpotifyPlayer("rfid123", None, "spotify:album:123")
-        if transferred_ago is not None:
-            player.transferred_at = time.monotonic() - transferred_ago
+        player.playback_started = playback_started
         return player
 
-    def playback(self, is_playing, context="spotify:album:123",
+    def playback(self, is_playing=False, context="spotify:album:123",
                  device="test_device"):
         return {
             "device": {"id": device},
             "context": {"uri": context},
             "is_playing": is_playing,
             "item": {"duration_ms": 100000},
-            "progress_ms": 0,
+            "progress_ms": 42000,
         }
 
-    def resume(self, player, playback_after):
-        """Resume, with the follow-up status check answering playback_after"""
-        with patch.object(player.auth_manager, "get_token", return_value="tok"), \
-                patch("spotify.utils", MagicMock()), \
-                patch("spotify.time.sleep") as slept, \
-                patch("spotify.requests.put") as put, \
-                patch.object(player, "check_playback_status",
-                             side_effect=lambda: self._answer(
-                                 player, playback_after)), \
-                patch.object(player, "play") as played:
-            put.return_value = MagicMock(status_code=204,
-                                         raise_for_status=lambda: None)
-            player.resume_playback()
-        return played, slept
+    def toggle(self, player, playback):
+        with patch.object(player, "check_playback_status",
+                          side_effect=lambda: self._answer(player, playback)), \
+                patch.object(player, "play") as played, \
+                patch.object(player, "resume_playback") as resumed, \
+                patch.object(player, "pause_playback") as paused:
+            player.toggle_playback()
+        return played, resumed, paused
 
     def _answer(self, player, playback):
-        """Stand in for check_playback_status, including its side effect"""
         if playback is None:
             player.playing = False
             return None
@@ -1231,92 +1225,58 @@ class TestResumeAfterTransfer:
                           and playback["is_playing"])
         return playback
 
-    def test_silent_resume_falls_back_to_play(self, monkeypatch):
-        """The bug: 204 accepted, nothing playing, so name the context"""
-        player = self.player(monkeypatch, transferred_ago=0.5)
-        played, _ = self.resume(player, self.playback(is_playing=False))
+    def test_fresh_player_names_the_context_instead_of_resuming(
+            self, monkeypatch):
+        """The bug. Nothing here loaded that context, so do not assume it"""
+        player = self.player(monkeypatch, playback_started=False)
+        played, resumed, _ = self.toggle(player, self.playback())
         played.assert_called_once_with()
+        resumed.assert_not_called()
 
-    def test_a_resume_that_did_nothing_is_never_logged_as_success(
-            self, monkeypatch, caplog):
-        """The log must not announce playback and then contradict itself"""
-        player = self.player(monkeypatch, transferred_ago=0.5)
-        with caplog.at_level("INFO"):
-            self.resume(player, self.playback(is_playing=False))
-        assert "Resumed playback" not in caplog.text
-        assert "confirming it started" in caplog.text
-        assert "nothing is playing" in caplog.text
-
-    def test_a_verified_resume_is_logged_once_it_is_known(
-            self, monkeypatch, caplog):
-        player = self.player(monkeypatch, transferred_ago=0.5)
-        with caplog.at_level("INFO"):
-            self.resume(player, self.playback(is_playing=True))
-        assert "confirming it started" in caplog.text
-        assert "Resumed playback" in caplog.text
-
-    def test_an_unverified_resume_still_reads_plainly(
-            self, monkeypatch, caplog):
-        """No transfer, nothing to doubt: one line, as before"""
-        player = self.player(monkeypatch)
-        with caplog.at_level("INFO"):
-            self.resume(player, self.playback(is_playing=False))
-        assert "Resumed playback" in caplog.text
-        assert "confirming it started" not in caplog.text
-
-    def test_working_resume_sends_nothing_further(self, monkeypatch):
-        player = self.player(monkeypatch, transferred_ago=0.5)
-        played, _ = self.resume(player, self.playback(is_playing=True))
+    def test_once_we_have_driven_it_a_bare_resume_is_correct(self, monkeypatch):
+        player = self.player(monkeypatch, playback_started=True)
+        played, resumed, _ = self.toggle(player, self.playback())
+        resumed.assert_called_once_with()
         played.assert_not_called()
 
-    def test_nothing_playing_anywhere_still_falls_back(self, monkeypatch):
-        """204 from /me/player means no session at all - our album, then"""
-        player = self.player(monkeypatch, transferred_ago=0.5)
-        played, _ = self.resume(player, None)
-        played.assert_called_once_with()
-
-    def test_ordinary_unpause_is_not_verified(self, monkeypatch):
-        """No transfer, no extra round trip - the reader blocks on it (TODO 30)"""
-        player = self.player(monkeypatch)
-        assert player.transferred_at is None
-        played, slept = self.resume(player, self.playback(is_playing=False))
+    def test_still_pauses_what_is_actually_playing(self, monkeypatch):
+        """d154474's case: spotifyd outlived us and is still streaming"""
+        player = self.player(monkeypatch, playback_started=False)
+        played, resumed, paused = self.toggle(
+            player, self.playback(is_playing=True))
+        paused.assert_called_once_with()
         played.assert_not_called()
-        slept.assert_not_called()
+        resumed.assert_not_called()
 
-    def test_verification_expires_with_the_settle_window(self, monkeypatch):
-        from spotify import SpotifyPlayer
-        old = SpotifyPlayer.TRANSFER_SETTLE_WINDOW + 1
-        player = self.player(monkeypatch, transferred_ago=old)
-        played, slept = self.resume(player, self.playback(is_playing=False))
-        played.assert_not_called()
-        slept.assert_not_called()
+    def test_a_rebuilt_player_resumes_where_the_story_is(self, monkeypatch):
+        """play() must not seek to the stored position after a restart
 
-    def test_transfer_records_the_time(self, monkeypatch):
-        player = self.player(monkeypatch)
-        with patch.object(player.auth_manager, "get_token", return_value="tok"), \
-                patch("spotify.requests.put") as put:
-            put.return_value = MagicMock(raise_for_status=lambda: None)
-            assert player.transfer_playback() is True
-        assert player.transferred_at is not None
-
-    def test_a_failed_resume_does_not_verify(self, monkeypatch):
-        """The request never landed; there is nothing to check on"""
-        player = self.player(monkeypatch, transferred_ago=0.5)
+        check_playback_status() refreshes playback_state from the live payload
+        whenever the playback is ours, so naming the context lands on the live
+        position - which is what made switching away from resume safe.
+        """
+        player = self.player(monkeypatch, playback_started=False)
+        player.playback_state = {"offset": {"position": 0}, "position_ms": 0}
         with patch.object(player.auth_manager, "get_token", return_value="tok"), \
                 patch("spotify.utils", MagicMock()), \
-                patch("spotify.time.sleep") as slept, \
-                patch("spotify.requests.put",
-                      side_effect=requests.RequestException("boom")), \
-                patch.object(player, "play") as played:
-            player.resume_playback()
-        played.assert_not_called()
-        slept.assert_not_called()
+                patch("spotify.requests.get") as got, \
+                patch("spotify.requests.put") as put:
+            got.return_value = MagicMock(
+                status_code=200, raise_for_status=lambda: None,
+                json=lambda: self.playback())
+            put.return_value = MagicMock(raise_for_status=lambda: None)
+            player.toggle_playback()
+        assert put.call_args.kwargs["json"]["position_ms"] == 42000
 
-    def test_foreign_session_is_reclaimed_and_logged(self, monkeypatch, caplog):
-        """A phone took it between the resume and the check"""
-        player = self.player(monkeypatch, transferred_ago=0.5)
-        with caplog.at_level("INFO"):
-            played, _ = self.resume(
-                player, self.playback(is_playing=True, device="a_phone"))
+    def test_foreign_session_is_still_never_adopted(self, monkeypatch):
+        player = self.player(monkeypatch, playback_started=True)
+        played, resumed, _ = self.toggle(
+            player, self.playback(context="spotify:album:someone_else"))
         played.assert_called_once_with()
-        assert "Reclaiming playback" in caplog.text
+        resumed.assert_not_called()
+
+    def test_nothing_playing_anywhere_names_the_context(self, monkeypatch):
+        player = self.player(monkeypatch, playback_started=True)
+        played, resumed, _ = self.toggle(player, None)
+        played.assert_called_once_with()
+        resumed.assert_not_called()
