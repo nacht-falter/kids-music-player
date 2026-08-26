@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 import buttons
 import db_setup
 import spotify
+import status_web
 import utils
 from remote_sync import schedule_sync
 from rfid import RfidReader
@@ -35,6 +36,7 @@ class RFIDMusicPlayer:
 
     def __init__(self):
         self.player = None
+        self.log_path = None
         self.player_lock = threading.Lock()
         self.last_activity = time.monotonic()
         self.activity_lock = threading.Lock()
@@ -62,6 +64,9 @@ class RFIDMusicPlayer:
         app_dir = os.path.dirname(os.path.abspath(__file__))
         app_name = os.getenv("APP_NAME", "rfid_music_player").lower()
         log_path = os.path.join(app_dir, f"{app_name}.log")
+        # Remembered so the status page shows the log this run actually
+        # writes, rather than guessing at the same name a second time.
+        self.log_path = log_path
 
         logging.basicConfig(
             level=level,
@@ -149,6 +154,18 @@ class RFIDMusicPlayer:
             self.rfid_reader = RfidReader()
         except (ValueError, FileNotFoundError) as e:
             logging.error(f"Failed to initialize RFID reader: {e}")
+
+    def start_status_page(self):
+        """Serve the device's own status page, if it can be served
+
+        A failure to bind is a missing page, never a failed startup: the
+        player has to keep playing cards on a device where port 8080 is
+        already taken.
+        """
+        try:
+            status_web.start(self)
+        except Exception as e:
+            logging.warning("Status page unavailable: %s", e)
 
     def get_player(self):
         """Get the current player instance."""
@@ -283,6 +300,7 @@ class RFIDMusicPlayer:
             self.setup_database()
             self.setup_sync()
             self.setup_hardware()
+            self.start_status_page()
 
             self.start_watchdog()
 

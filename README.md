@@ -404,6 +404,55 @@ SYNC_API_TOKEN=your_api_token
 
 This allows multiple music players to share the same RFID card database, so cards work consistently across all your devices. You can also register new RFID codes remotely without turning on the device.
 
+## Status Page
+
+The player serves a page about itself, so a device that is misbehaving can be
+diagnosed from a phone instead of an ssh session — and a photo of the page is a
+usable bug report.
+
+```
+http://<device>.local:8080/
+```
+
+It starts with the player and needs no configuration. Set `STATUS_PORT` to move
+it, or `STATUS_PORT=0` to switch it off:
+
+```env
+# Optional:
+# STATUS_PORT=8080
+```
+
+What it answers, all of it read-only:
+
+- **Spotify** — whether the refresh token still works, when it expires (from
+  `SPOTIFY_AUTH_DATE`), which account `spotifyd` is signed in as, and whether
+  this device actually appears in that account's Connect device list. That last
+  row is the real health check: `spotifyd` can sit at "Connecting to AP" for
+  half an hour while `systemctl` reports it running and every card fails.
+- **Playback** — what is coming out of the speaker right now, asked of mpd and
+  of Spotify rather than of the player's own state, which is exactly what goes
+  wrong when a phone takes the session. Plus the card that is loaded, the
+  episode of a series, and the position that would be resumed.
+- **Player** — how long it has been running, how long until the idle watchdog
+  fires and what that will do, whether the reader, buttons and LED came up, how
+  many cards are registered and when new ones were last synced.
+- **Device** — address, wifi, uptime, temperature, undervoltage, free disk.
+- **The last lines of the log**, errors in red, and **spotifyd's own
+  complaints** from the journal. The second cannot come from the log: a dropped
+  Spotify session happens entirely inside spotifyd and never reaches this
+  process.
+
+Opening the page counts as activity, so the device will not switch itself off
+while someone is reading it. There is no auto-refresh, so a forgotten open tab
+cannot keep a battery device awake either.
+
+If the player is not running, the same page can be served on its own — it then
+leaves out everything that depends on a live player:
+
+```bash
+python status_web.py
+```
+
 ## Hardware Setup
 
 - Connect RFID reader via USB
