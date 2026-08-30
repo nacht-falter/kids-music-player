@@ -428,3 +428,75 @@ def test_rescanning_a_paused_series_resumes_rather_than_advancing():
 
     player.toggle_playback.assert_called_once()
     player.next_episode.assert_not_called()
+
+
+# --- explaining a device Spotify cannot see -------------------------------
+
+def _blob(tmp_path, name, username):
+    path = tmp_path / name
+    path.write_text('{"username": "%s", "auth_type": 1, "auth_data": "x"}'
+                    % username)
+    return str(path)
+
+
+def test_blob_account_reads_the_username(tmp_path):
+    assert utils.blob_account(_blob(tmp_path, "c.json", "someone")) == "someone"
+
+
+def test_blob_account_is_none_when_unreadable(tmp_path):
+    assert utils.blob_account(str(tmp_path / "absent.json")) is None
+
+
+def test_spotifyd_account_reads_the_last_authenticated_line():
+    out = MagicMock()
+    out.stdout = ("Authenticated as 'first' !\nsomething else\n"
+                  "Authenticated as 'second' !\n")
+    with patch.object(utils.subprocess, "run", return_value=out):
+        assert utils.spotifyd_account() == "second"
+
+
+def test_spotifyd_account_survives_an_unreadable_journal():
+    with patch.object(utils.subprocess, "run", side_effect=OSError("no journalctl")):
+        assert utils.spotifyd_account() is None
+
+
+def test_explain_names_the_account_and_the_blobs(tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(utils, "SPOTIFYD_OAUTH_BLOB",
+                        _blob(tmp_path, "oauth.json", "ours"))
+    monkeypatch.setattr(utils, "SPOTIFYD_ZEROCONF_BLOB",
+                        _blob(tmp_path, "zc.json", "theirs"))
+    monkeypatch.setattr(utils, "SPOTIFYD_FLAT_CREDENTIALS",
+                        str(tmp_path / "absent.json"))
+    with patch.object(utils, "spotifyd_account", return_value="theirs"), \
+            caplog.at_level("ERROR"):
+        utils.explain_missing_device()
+    assert len(caplog.records) == 1
+    assert caplog.text.count("\n") == 1, "one line, not a paragraph"
+    assert "spotifyd is on theirs" in caplog.text
+    assert "oauth=ours" in caplog.text and "zeroconf=theirs" in caplog.text
+    assert "cached" not in caplog.text
+
+
+def test_explain_says_so_when_nothing_can_be_read(tmp_path, monkeypatch, caplog):
+    """A diagnostic that cannot diagnose must say that, not stay silent"""
+    for name in ("SPOTIFYD_OAUTH_BLOB", "SPOTIFYD_ZEROCONF_BLOB",
+                 "SPOTIFYD_FLAT_CREDENTIALS"):
+        monkeypatch.setattr(utils, name, str(tmp_path / "absent.json"))
+    with patch.object(utils, "spotifyd_account", return_value=None), \
+            caplog.at_level("ERROR"):
+        utils.explain_missing_device()
+    assert "an unknown account" in caplog.text
+    assert "credentials unreadable" in caplog.text
+
+
+def test_create_player_explains_once(monkeypatch):
+    player = MagicMock()
+    player.transfer_playback.return_value = False
+    monkeypatch.setattr("spotify.SpotifyPlayer", lambda *a, **k: player)
+    with patch.object(utils, "explain_missing_device") as explain, \
+            patch.object(utils.time, "sleep"):
+        result = utils.create_player(
+            {"rfid": "1", "source": "spotify", "location": "spotify:album:x",
+             "playback_state": None}, retries=3, delay=0)
+    assert result is None
+    assert explain.call_count == 1

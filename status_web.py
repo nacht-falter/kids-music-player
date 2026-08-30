@@ -57,7 +57,16 @@ LOG_LINES = 30
 JOURNAL_LINES = 8
 API = "https://api.spotify.com/v1"
 API_TIMEOUT = 8
-SPOTIFYD_CREDENTIALS = "~/.cache/spotifyd/credentials.json"
+# Spelled out rather than expanded from "~": spotifyd runs as pi, this page
+# runs inside the player, which runs as root, so "~" is /root and none of
+# these are under it.
+SPOTIFYD_CACHE = os.environ.get("SPOTIFYD_CACHE", "/home/pi/.cache/spotifyd")
+SPOTIFYD_CREDENTIALS = os.path.join(SPOTIFYD_CACHE, "credentials.json")
+# 0.4.x keeps two more, and prefers them in this order. The oauth blob is the
+# only one a Connect takeover cannot rewrite.
+SPOTIFYD_OAUTH_BLOB = os.path.join(SPOTIFYD_CACHE, "oauth/credentials.json")
+SPOTIFYD_ZEROCONF_CREDENTIALS = os.path.join(
+    SPOTIFYD_CACHE, "zeroconf/credentials.json")
 
 # Dot colours. Green and red are claims; grey is deliberately common, because
 # most rows are facts rather than verdicts and a page of coloured dots stops
@@ -127,7 +136,8 @@ def spotify_snapshot():
     """
     snap = {"token": None, "token_error": None,
             "devices": None, "devices_error": None,
-            "playback": None, "playback_error": None}
+            "playback": None, "playback_error": None,
+            "me": None, "me_error": None}
 
     try:
         manager = spotify.get_auth_manager()
@@ -154,6 +164,13 @@ def spotify_snapshot():
     except Exception as error:
         snap["playback_error"] = str(error)
 
+    # Whose token this is. Only interesting next to the account spotifyd is
+    # logged in as: when those two differ, nothing works and nothing says why.
+    try:
+        snap["me"] = api_get(snap["token"], "/me")
+    except Exception as error:
+        snap["me_error"] = str(error)
+
     return snap
 
 
@@ -174,14 +191,30 @@ def spotifyd_account():
     without our device in it, so every card fails silently. toem and toem2 are
     on separate accounts, which makes that an easy mistake to make and an
     invisible one afterwards.
+
+    Asked of the journal, not of a credential file. Any Spotify client on the
+    network can log spotifyd into another account over Connect, and on 0.4.x
+    the file this used to read (`~/.cache/spotifyd/credentials.json`) is no
+    longer consulted at all - so on 2026-08-29 it would have reported the
+    right account for three hours while the device sat on the wrong one.
     """
-    path = os.path.expanduser(
-        os.environ.get("SPOTIFYD_CREDENTIALS", SPOTIFYD_CREDENTIALS))
-    try:
-        with open(path, encoding="utf-8") as handle:
-            return json.load(handle).get("username")
-    except Exception:  # never run, cache cleared, unreadable JSON
-        return None
+    logged_in = sh("journalctl -u spotifyd --no-pager -o cat -n 500 "
+                   "| grep -o \"Authenticated as '[^']*'\" | tail -n 1",
+                   timeout=8)
+    if logged_in:
+        return logged_in.split("'")[1]
+
+    # No journal (or none since the last boot): fall back to the credential
+    # files, newest precedence first. These say what the next start would use,
+    # which is a guess at the present, not a reading of it.
+    for path in (SPOTIFYD_OAUTH_BLOB, SPOTIFYD_ZEROCONF_CREDENTIALS,
+                 os.environ.get("SPOTIFYD_CREDENTIALS", SPOTIFYD_CREDENTIALS)):
+        try:
+            with open(os.path.expanduser(path), encoding="utf-8") as handle:
+                return json.load(handle).get("username")
+        except Exception:  # never run, cache cleared, unreadable JSON
+            continue
+    return None
 
 
 def token_expiry_row():
@@ -225,8 +258,18 @@ def spotify_rows(snap):
     rows.append(token_expiry_row())
 
     account = spotifyd_account()
-    rows.append(("Account spotifyd uses", account or "unknown",
-                 OK if account else WARN))
+    ours = (snap.get("me") or {}).get("id")
+    if account and ours and account != ours:
+        # Someone played to this box from a phone signed into another account.
+        # Spotify Connect lets any client on the network do that, and it
+        # survives a reboot, so this is the row that explains a box which has
+        # stopped answering to every card at once.
+        rows.append(("Account spotifyd uses",
+                     "%s - taken over; our token is %s" % (account, ours),
+                     BAD))
+    else:
+        rows.append(("Account spotifyd uses", account or "unknown",
+                     OK if account else WARN))
 
     if snap["token"]:
         # The health check that counts. `systemctl is-active spotifyd` says

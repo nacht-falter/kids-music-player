@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import sqlite3
 import subprocess
 import time
@@ -92,6 +93,74 @@ def get_music_data(db, rfid):
         return None
 
 
+# Where spotifyd keeps its credentials. 0.4.x prefers the oauth blob at
+# startup, then the zeroconf one; the flat file is what 0.3.x used and 0.4.x
+# ignores. Spelled out rather than expanded from "~": spotifyd runs as pi and
+# the player runs as root, so this process's home is /root and none of these
+# are under it. Overridable for installs laid out differently.
+SPOTIFYD_CACHE = os.environ.get("SPOTIFYD_CACHE", "/home/pi/.cache/spotifyd")
+SPOTIFYD_OAUTH_BLOB = os.path.join(SPOTIFYD_CACHE, "oauth/credentials.json")
+SPOTIFYD_ZEROCONF_BLOB = os.path.join(
+    SPOTIFYD_CACHE, "zeroconf/credentials.json")
+SPOTIFYD_FLAT_CREDENTIALS = os.path.join(SPOTIFYD_CACHE, "credentials.json")
+
+AUTHENTICATED_AS = re.compile(r"Authenticated as '([^']+)'")
+
+
+def spotifyd_account():
+    """The account spotifyd is logged in as right now, or None
+
+    Read from the journal rather than from a credential file. The files say
+    what the next start would use; this says who is actually logged in, and
+    those diverge exactly when it matters.
+    """
+    try:
+        journal = subprocess.run(
+            ["journalctl", "-u", "spotifyd", "--no-pager", "-o", "cat",
+             "-n", "500"],
+            capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError) as e:
+        logging.debug("Could not read spotifyd's journal: %s", e)
+        return None
+    found = AUTHENTICATED_AS.findall(journal)
+    return found[-1] if found else None
+
+
+def blob_account(path):
+    """The account named by one of spotifyd's credential files, or None"""
+    try:
+        with open(path, encoding="utf-8") as blob:
+            return json.load(blob).get("username")
+    except (OSError, ValueError):
+        return None
+
+
+def explain_missing_device():
+    """Log why Spotify has no device for us, when a transfer says it has none
+
+    The 404s that follow a failed transfer say the device is not there but
+    never why. Much the likeliest cause is that a Spotify client on the
+    network logged spotifyd into a different account - that is what Connect
+    discovery is for, and we leave it on so both boxes can be played to from a
+    phone. The box then advertises itself to that account instead of ours, and
+    stays there across reboots if the credentials were cached.
+
+    So: who spotifyd is logged in as now, and which account each credential
+    file would start it as next time. Purely diagnostic, and best-effort -
+    anything unreadable is reported as unknown rather than raising.
+    """
+    running_as = spotifyd_account()
+    blobs = ", ".join(
+        "%s=%s" % (name, account)
+        for name, account in (("oauth", blob_account(SPOTIFYD_OAUTH_BLOB)),
+                              ("zeroconf", blob_account(SPOTIFYD_ZEROCONF_BLOB)),
+                              ("cached", blob_account(SPOTIFYD_FLAT_CREDENTIALS)))
+        if account)
+
+    logging.error("No Spotify device for us: spotifyd is on %s; credentials %s",
+                  running_as or "an unknown account", blobs or "unreadable")
+
+
 def create_player(music_data, retries=10, delay=1):
     """Create audio player instance"""
     rfid = music_data["rfid"]
@@ -133,6 +202,10 @@ def create_player(music_data, retries=10, delay=1):
                 logging.info(
                     "Spotify player ready after %d attempt(s)", attempt + 1)
                 return player
+            # Ten identical 404s say the device is not there but never why.
+            # Explain once, on the first failure, then retry as before.
+            if attempt == 0 and not transferred:
+                explain_missing_device()
             logging.warning("Spotify player not ready (attempt %d/%d), retrying in %d seconds...",
                             attempt + 1, retries, delay)
             time.sleep(delay)
