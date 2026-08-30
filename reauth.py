@@ -41,7 +41,16 @@ SPOTIFYD_BLOBS = (
     ("cached", "~/.cache/spotifyd/credentials.json"),
 )
 SPOTIFYD_CREDENTIALS = "~/.cache/spotifyd/credentials.json"
-AUTHENTICATED_AS = re.compile(r"Authenticated as '([^']+)'")
+# Both quote styles: 0.3.x writes Authenticated as "x", 0.4.x writes 'x'.
+# A target capped at 0.3.5 (no armv6 binary after 0.4.0) only ever logs the
+# first, so a single-quote pattern reads nothing there.
+AUTHENTICATED_AS = re.compile(r"""Authenticated as ["']([^"']+)["']""")
+
+# spotifyd is a system unit on one box and a user unit on the other, and
+# journalctl addresses those differently. Ask both and take the newest line:
+# a box that has been converted keeps history under the old scope too.
+SPOTIFYD_JOURNAL_SELECTORS = ("-u spotifyd",
+                             "_SYSTEMD_USER_UNIT=spotifyd.service")
 
 
 def run(host, command):
@@ -93,13 +102,24 @@ def journal_account(host):
     who is actually logged in, and those diverge exactly when it matters - a
     Connect takeover switches the running session before any file changes.
     """
-    try:
-        raw = run(host, "journalctl -u spotifyd --no-pager -o cat -n 500 "
-                        "2>/dev/null || true")
-    except Exception:
-        return None
-    found = AUTHENTICATED_AS.findall(raw or "")
-    return found[-1] if found else None
+    newest = None
+    for selector in SPOTIFYD_JOURNAL_SELECTORS:
+        try:
+            raw = run(host, "journalctl %s --no-pager -o short-unix -n 500 "
+                            "2>/dev/null || true" % selector)
+        except Exception:
+            continue
+        for line in (raw or "").splitlines():
+            found = AUTHENTICATED_AS.search(line)
+            if not found:
+                continue
+            try:  # short-unix prefixes each line with its epoch timestamp
+                when = float(line.split(" ", 1)[0])
+            except ValueError:
+                continue
+            if newest is None or when > newest[0]:
+                newest = (when, found.group(1))
+    return newest[1] if newest else None
 
 
 def spotifyd_account(host, credentials=None):

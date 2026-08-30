@@ -103,6 +103,11 @@ def test_exchange_raises_with_body_on_failure():
             reauth.exchange("code", "creds")
 
 
+def _journal_line(ts, msg):
+    """One journalctl -o short-unix line"""
+    return "%s host spotifyd[1]: %s\n" % (ts, msg)
+
+
 def _fake_run(files=None, journal=""):
     """Stand in for reauth.run, answering `cat <path>` and the journal read
 
@@ -129,11 +134,19 @@ def test_spotifyd_account_prefers_the_journal_over_the_blobs():
     so the journal is the only source that is right during one.
     """
     run = _fake_run(files={"oauth/credentials.json": '{"username": "stale"}'},
-                    journal="Authenticated as 'first' !\n"
-                            "Authenticated as 'current' !\n")
+                    journal=_journal_line("100.0", "Authenticated as 'first' !")
+                    + _journal_line("120.0", "Authenticated as 'current' !"))
     with patch("reauth.run", side_effect=run):
         assert reauth.spotifyd_account(None) == ("current",
                                                  "journal (logged in now)")
+
+
+def test_journal_account_accepts_the_0_3_x_double_quote_style():
+    """A target capped at 0.3.5 logs Authenticated as "x", never 'x'"""
+    run = _fake_run(journal=_journal_line("100.0",
+                                          'Authenticated as "old_style" !'))
+    with patch("reauth.run", side_effect=run):
+        assert reauth.journal_account(None) == "old_style"
 
 
 def test_spotifyd_account_falls_back_in_spotifyd_precedence_order():
@@ -158,7 +171,8 @@ def test_spotifyd_account_skips_blobs_that_are_absent():
 def test_spotifyd_account_honours_an_explicit_path():
     """--spotifyd-credentials overrides journal and precedence alike"""
     run = _fake_run(files={"custom.json": '{"username": "explicit"}'},
-                    journal="Authenticated as 'ignored' !\n")
+                    journal=_journal_line("100.0",
+                                          "Authenticated as 'ignored' !"))
     with patch("reauth.run", side_effect=run):
         assert reauth.spotifyd_account(None, "custom.json") == (
             "explicit", "custom.json")

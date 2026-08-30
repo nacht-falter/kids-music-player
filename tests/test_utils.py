@@ -447,10 +447,18 @@ def test_blob_account_is_none_when_unreadable(tmp_path):
     assert utils.blob_account(str(tmp_path / "absent.json")) is None
 
 
-def test_spotifyd_account_reads_the_last_authenticated_line():
+def _journal(*lines):
+    """A journalctl -o short-unix result: "<epoch> host unit[pid]: message" """
     out = MagicMock()
-    out.stdout = ("Authenticated as 'first' !\nsomething else\n"
-                  "Authenticated as 'second' !\n")
+    out.stdout = "".join("%s toem spotifyd[1]: %s\n" % (ts, msg)
+                         for ts, msg in lines)
+    return out
+
+
+def test_spotifyd_account_reads_the_last_authenticated_line():
+    out = _journal(("100.0", "Authenticated as 'first' !"),
+                   ("110.0", "something else"),
+                   ("120.0", "Authenticated as 'second' !"))
     with patch.object(utils.subprocess, "run", return_value=out):
         assert utils.spotifyd_account() == "second"
 
@@ -458,6 +466,40 @@ def test_spotifyd_account_reads_the_last_authenticated_line():
 def test_spotifyd_account_survives_an_unreadable_journal():
     with patch.object(utils.subprocess, "run", side_effect=OSError("no journalctl")):
         assert utils.spotifyd_account() is None
+
+
+def test_spotifyd_account_accepts_both_quote_styles():
+    """0.3.x writes Authenticated as "x", 0.4.x writes 'x'
+
+    toem is capped at 0.3.5 - spotifyd ships no armv6 binary after 0.4.0 - so
+    a pattern that only matched 0.4.x read nothing at all on that box.
+    """
+    out = _journal(("100.0", 'Authenticated as "old_style" !'))
+    with patch.object(utils.subprocess, "run", return_value=out):
+        assert utils.spotifyd_account() == "old_style"
+
+
+def test_spotifyd_account_takes_the_newest_across_both_unit_scopes():
+    """The system unit answers on toem2, the user unit on toem
+
+    toem2 also holds user-unit history from before its conversion, so taking
+    the first selector that returns anything would read a stale account. The
+    newest line wins regardless of which scope it came from.
+    """
+    system = _journal(("200.0", "Authenticated as 'current' !"))
+    user = _journal(("100.0", "Authenticated as 'stale' !"))
+    with patch.object(utils.subprocess, "run", side_effect=[system, user]):
+        assert utils.spotifyd_account() == "current"
+    with patch.object(utils.subprocess, "run", side_effect=[user, system]):
+        assert utils.spotifyd_account() == "current"
+
+
+def test_spotifyd_account_uses_the_other_scope_when_one_is_empty():
+    """toem has nothing under -u spotifyd; everything is under the user unit"""
+    empty = _journal()
+    user = _journal(("100.0", 'Authenticated as "only_here" !'))
+    with patch.object(utils.subprocess, "run", side_effect=[empty, user]):
+        assert utils.spotifyd_account() == "only_here"
 
 
 def test_explain_names_the_account_and_the_blobs(tmp_path, monkeypatch, caplog):

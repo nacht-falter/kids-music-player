@@ -38,6 +38,7 @@ import html
 import json
 import logging
 import os
+import re
 import shutil
 import socket
 import sqlite3
@@ -67,6 +68,10 @@ SPOTIFYD_CREDENTIALS = os.path.join(SPOTIFYD_CACHE, "credentials.json")
 SPOTIFYD_OAUTH_BLOB = os.path.join(SPOTIFYD_CACHE, "oauth/credentials.json")
 SPOTIFYD_ZEROCONF_CREDENTIALS = os.path.join(
     SPOTIFYD_CACHE, "zeroconf/credentials.json")
+
+# 0.3.x logs Authenticated as "x", 0.4.x as 'x'. toem is capped at 0.3.5
+# because spotifyd ships no armv6 binary after 0.4.0, so both are live.
+AUTHENTICATED_AS = re.compile(r"""Authenticated as ["']([^"']+)["']""")
 
 # Dot colours. Green and red are claims; grey is deliberately common, because
 # most rows are facts rather than verdicts and a page of coloured dots stops
@@ -198,11 +203,28 @@ def spotifyd_account():
     longer consulted at all - so on 2026-08-29 it would have reported the
     right account for three hours while the device sat on the wrong one.
     """
-    logged_in = sh("journalctl -u spotifyd --no-pager -o cat -n 500 "
-                   "| grep -o \"Authenticated as '[^']*'\" | tail -n 1",
-                   timeout=8)
-    if logged_in:
-        return logged_in.split("'")[1]
+    # Two selectors because spotifyd is a system unit on toem2 and a user
+    # unit on toem, and journalctl addresses those differently; two quote
+    # styles because 0.3.x writes Authenticated as "x" and 0.4.x writes 'x'.
+    # The answer is the newest line across both, not the first selector that
+    # returns something: toem2 also holds user-unit history from before its
+    # conversion, and that history is stale.
+    newest = None
+    for selector in ("-u spotifyd", "_SYSTEMD_USER_UNIT=spotifyd.service"):
+        out = sh("journalctl %s --no-pager -o short-unix -n 500" % selector,
+                 timeout=8)
+        for line in out.splitlines():
+            found = AUTHENTICATED_AS.search(line)
+            if not found:
+                continue
+            try:  # short-unix prefixes each line with its epoch timestamp
+                when = float(line.split(" ", 1)[0])
+            except ValueError:
+                continue
+            if newest is None or when > newest[0]:
+                newest = (when, found.group(1))
+    if newest:
+        return newest[1]
 
     # No journal (or none since the last boot): fall back to the credential
     # files, newest precedence first. These say what the next start would use,

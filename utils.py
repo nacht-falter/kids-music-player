@@ -104,7 +104,19 @@ SPOTIFYD_ZEROCONF_BLOB = os.path.join(
     SPOTIFYD_CACHE, "zeroconf/credentials.json")
 SPOTIFYD_FLAT_CREDENTIALS = os.path.join(SPOTIFYD_CACHE, "credentials.json")
 
-AUTHENTICATED_AS = re.compile(r"Authenticated as '([^']+)'")
+# Both quote styles: spotifyd 0.3.x writes Authenticated as "x", 0.4.x
+# writes 'x'. toem is capped at 0.3.5 (no armv6 binary since 0.4.0) and
+# toem2's journal holds both, from before its unit conversion.
+AUTHENTICATED_AS = re.compile(r"""Authenticated as ["']([^"']+)["']""")
+
+# spotifyd is a system unit on toem2 and a user unit on toem, and journalctl
+# selects those differently. Ask both: a box has one or the other, and
+# toem2 has *history* under both, so the answer is the most recent line
+# across the two rather than the first selector that returns anything.
+SPOTIFYD_JOURNAL_SELECTORS = (
+    ["-u", "spotifyd"],
+    ["_SYSTEMD_USER_UNIT=spotifyd.service"],
+)
 
 
 def spotifyd_account():
@@ -114,16 +126,28 @@ def spotifyd_account():
     what the next start would use; this says who is actually logged in, and
     those diverge exactly when it matters.
     """
-    try:
-        journal = subprocess.run(
-            ["journalctl", "-u", "spotifyd", "--no-pager", "-o", "cat",
-             "-n", "500"],
-            capture_output=True, text=True, timeout=5).stdout
-    except (OSError, subprocess.SubprocessError) as e:
-        logging.debug("Could not read spotifyd's journal: %s", e)
-        return None
-    found = AUTHENTICATED_AS.findall(journal)
-    return found[-1] if found else None
+    latest = None
+    for selector in SPOTIFYD_JOURNAL_SELECTORS:
+        try:
+            journal = subprocess.run(
+                ["journalctl", "--no-pager", "-o", "short-unix", "-n", "500"]
+                + selector,
+                capture_output=True, text=True, timeout=5).stdout
+        except (OSError, subprocess.SubprocessError) as e:
+            logging.debug("Could not read spotifyd's journal (%s): %s",
+                          " ".join(selector), e)
+            continue
+        for line in journal.splitlines():
+            found = AUTHENTICATED_AS.search(line)
+            if not found:
+                continue
+            try:  # short-unix prefixes each line with its epoch timestamp
+                when = float(line.split(" ", 1)[0])
+            except ValueError:
+                continue
+            if latest is None or when > latest[0]:
+                latest = (when, found.group(1))
+    return latest[1] if latest else None
 
 
 def blob_account(path):
