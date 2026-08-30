@@ -32,7 +32,16 @@ SCOPES = [
     "user-read-playback-position",
     "playlist-read-private",
 ]
+# spotifyd 0.4.x prefers the oauth blob at startup, then the zeroconf one; the
+# flat file is what 0.3.x used and 0.4.x ignores. Checking only the flat file
+# means validating a token against credentials spotifyd will not use.
+SPOTIFYD_BLOBS = (
+    ("oauth", "~/.cache/spotifyd/oauth/credentials.json"),
+    ("zeroconf", "~/.cache/spotifyd/zeroconf/credentials.json"),
+    ("cached", "~/.cache/spotifyd/credentials.json"),
+)
 SPOTIFYD_CREDENTIALS = "~/.cache/spotifyd/credentials.json"
+AUTHENTICATED_AS = re.compile(r"Authenticated as '([^']+)'")
 
 
 def run(host, command):
@@ -69,19 +78,71 @@ def read_env(host, env_path):
     return env
 
 
-def spotifyd_account(host, credentials=SPOTIFYD_CREDENTIALS):
+def blob_account(host, path):
+    """The account named by one of spotifyd's credential files, or None"""
+    try:
+        return json.loads(run(host, f"cat {path}")).get("username")
+    except Exception:  # absent, unreadable, or not JSON - all mean "no answer"
+        return None
+
+
+def journal_account(host):
+    """Who spotifyd is logged in as right now, from its journal, or None
+
+    The credential files say what the *next* start would use; the journal says
+    who is actually logged in, and those diverge exactly when it matters - a
+    Connect takeover switches the running session before any file changes.
+    """
+    try:
+        raw = run(host, "journalctl -u spotifyd --no-pager -o cat -n 500 "
+                        "2>/dev/null || true")
+    except Exception:
+        return None
+    found = AUTHENTICATED_AS.findall(raw or "")
+    return found[-1] if found else None
+
+
+def spotifyd_account(host, credentials=None):
     """The Spotify account spotifyd is logged in as, if we can determine it
 
     The token must belong to this account. A token for a different account
     authenticates fine but sees a different device list, so the player finds no
     device and every card silently fails.
+
+    Asks the journal first, then the credential files in spotifyd 0.4.x's own
+    precedence order. *credentials* overrides all of it with a single path, for
+    a layout none of this describes.
+
+    Returns (account, source). Both are None when nothing could be read.
     """
-    try:
-        raw = run(host, f"cat {credentials}")
-        return json.loads(raw).get("username")
-    except Exception as e:  # cache missing, spotifyd never run, bad JSON
-        print(f"  ! could not read spotifyd credentials: {e}")
-        return None
+    if credentials:
+        return blob_account(host, credentials), credentials
+
+    running = journal_account(host)
+    if running:
+        return running, "journal (logged in now)"
+
+    for name, path in SPOTIFYD_BLOBS:
+        account = blob_account(host, path)
+        if account:
+            return account, f"{name} blob"
+
+    print("  ! could not determine spotifyd's account from the journal or "
+          "any credential file")
+    return None, None
+
+
+def disagreeing_blobs(host, expected):
+    """Credential files naming an account other than *expected*
+
+    A blob holding a different account is what makes a Connect takeover
+    survive a reboot, so it is worth naming even when the running session is
+    correct.
+    """
+    return [(name, account)
+            for name, path in SPOTIFYD_BLOBS
+            for account in [blob_account(host, path)]
+            if account and account != expected]
 
 
 def build_authorize_url(client_id):
@@ -224,8 +285,10 @@ def main():
                         help="path to .env on the target")
     parser.add_argument("--service", default="toem",
                         help="systemd service to restart (default: toem)")
-    parser.add_argument("--spotifyd-credentials", default=SPOTIFYD_CREDENTIALS,
-                        help="path to spotifyd's credentials.json on the target")
+    parser.add_argument("--spotifyd-credentials", default=None,
+                        help="read the account from this one credential file "
+                             "instead of asking the journal and spotifyd's "
+                             "own oauth/zeroconf/cached precedence")
     parser.add_argument("--restart-command", default=None,
                         help="shell command that restarts the player, instead "
                              "of restarting --service. For targets with no "
@@ -249,9 +312,15 @@ def main():
     except Exception:
         sys.exit("SPOTIFY_USERCREDS is not valid base64 of 'client_id:secret'")
 
-    expected_account = spotifyd_account(args.host, args.spotifyd_credentials)
+    expected_account, source = spotifyd_account(
+        args.host, args.spotifyd_credentials)
     if expected_account:
-        print(f"spotifyd account: {expected_account}")
+        print(f"spotifyd account: {expected_account}  (from {source})")
+        # A blob naming someone else is how a Connect takeover survives a
+        # reboot: the running session is fine, the next start is not.
+        for name, other in disagreeing_blobs(args.host, expected_account):
+            print(f"  ! {name} blob names {other}, not {expected_account} - "
+                  f"a restart would log spotifyd in as {other}")
     else:
         print("spotifyd account: unknown - the account check will be skipped")
 

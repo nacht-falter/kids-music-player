@@ -101,3 +101,89 @@ def test_exchange_raises_with_body_on_failure():
     with patch("reauth.requests.post", return_value=response):
         with pytest.raises(RuntimeError, match="invalid_grant"):
             reauth.exchange("code", "creds")
+
+
+def _fake_run(files=None, journal=""):
+    """Stand in for reauth.run, answering `cat <path>` and the journal read
+
+    Paths are matched by their tail, so tests name "oauth" rather than the
+    whole ~/.cache/spotifyd/... string.
+    """
+    files = files or {}
+
+    def run(host, command):
+        if command.startswith("journalctl"):
+            return journal
+        for fragment, body in files.items():
+            if fragment in command:
+                return body
+        raise RuntimeError("no such file")
+
+    return run
+
+
+def test_spotifyd_account_prefers_the_journal_over_the_blobs():
+    """Who is logged in now beats what the next start would use
+
+    A Connect takeover switches the running session before any file changes,
+    so the journal is the only source that is right during one.
+    """
+    run = _fake_run(files={"oauth/credentials.json": '{"username": "stale"}'},
+                    journal="Authenticated as 'first' !\n"
+                            "Authenticated as 'current' !\n")
+    with patch("reauth.run", side_effect=run):
+        assert reauth.spotifyd_account(None) == ("current",
+                                                 "journal (logged in now)")
+
+
+def test_spotifyd_account_falls_back_in_spotifyd_precedence_order():
+    """oauth wins over zeroconf, which wins over the flat 0.3.x file"""
+    run = _fake_run(files={
+        "oauth/credentials.json": '{"username": "from_oauth"}',
+        "zeroconf/credentials.json": '{"username": "from_zeroconf"}',
+        "spotifyd/credentials.json": '{"username": "from_flat"}',
+    })
+    with patch("reauth.run", side_effect=run):
+        assert reauth.spotifyd_account(None) == ("from_oauth", "oauth blob")
+
+
+def test_spotifyd_account_skips_blobs_that_are_absent():
+    run = _fake_run(files={"zeroconf/credentials.json":
+                           '{"username": "from_zeroconf"}'})
+    with patch("reauth.run", side_effect=run):
+        assert reauth.spotifyd_account(None) == ("from_zeroconf",
+                                                 "zeroconf blob")
+
+
+def test_spotifyd_account_honours_an_explicit_path():
+    """--spotifyd-credentials overrides journal and precedence alike"""
+    run = _fake_run(files={"custom.json": '{"username": "explicit"}'},
+                    journal="Authenticated as 'ignored' !\n")
+    with patch("reauth.run", side_effect=run):
+        assert reauth.spotifyd_account(None, "custom.json") == (
+            "explicit", "custom.json")
+
+
+def test_spotifyd_account_is_unknown_when_nothing_is_readable():
+    with patch("reauth.run", side_effect=_fake_run()):
+        assert reauth.spotifyd_account(None) == (None, None)
+
+
+def test_disagreeing_blobs_names_a_blob_holding_another_account():
+    """The running session can be right while the next start is not"""
+    run = _fake_run(files={
+        "oauth/credentials.json": '{"username": "ours"}',
+        "zeroconf/credentials.json": '{"username": "theirs"}',
+    })
+    with patch("reauth.run", side_effect=run):
+        assert reauth.disagreeing_blobs(None, "ours") == [("zeroconf",
+                                                           "theirs")]
+
+
+def test_disagreeing_blobs_is_empty_when_every_blob_agrees():
+    run = _fake_run(files={
+        "oauth/credentials.json": '{"username": "ours"}',
+        "zeroconf/credentials.json": '{"username": "ours"}',
+    })
+    with patch("reauth.run", side_effect=run):
+        assert reauth.disagreeing_blobs(None, "ours") == []
