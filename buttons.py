@@ -326,10 +326,13 @@ class PlayerActionHandler:
 class GpioButtonHandler:
     """Handles GPIO button presses."""
 
-    # State changes ignored after an edge. Mechanical dome switches bounce for
-    # a few ms; 100ms outlasts that with margin and stays well below the
-    # fastest deliberate double press observed (141ms).
-    BUTTON_BOUNCE_TIME = 0.1
+    # State changes ignored after an edge. Measured on toem2's own button
+    # 2026-08-31 with debouncing off: six ordinary taps lasted 123-156ms, and
+    # the contact bounced exactly once, for 1ms. The original 100ms was chosen
+    # before that measurement and sat inside the tap, which started swallowing
+    # releases once the tap action moved to when_released. 30ms leaves 30x the
+    # observed bounce and still 4x clearance under the shortest real tap.
+    BUTTON_BOUNCE_TIME = 0.03
 
     def __init__(self, get_player, set_player, database_url, player_lock, reset_last_activity):
         if not Button:
@@ -403,6 +406,13 @@ class IrReceiver:
     # elapsed time and ended up measuring the Spotify round-trip instead.
     IR_REPEAT_INTERVAL = 0.11
 
+    # How long a repeatable key must be held before it starts ramping. Without
+    # it the very first repeat frame - ~110ms in - already counts as a second
+    # step, so an ordinary press of volume down gave two or three steps while a
+    # quicker press of volume up gave one. Every keyboard and remote waits
+    # before auto-repeating for exactly this reason.
+    REPEAT_DELAY = 0.4
+
     def __init__(self, get_player, set_player, database_url, player_lock, reset_last_activity, socket_path='/var/run/lirc/lircd'):
         self.socket_path = socket_path
         self._running = False
@@ -464,6 +474,8 @@ class IrReceiver:
         """
         hold_after = max(
             1, round(PlayerActionHandler.HOLD_TIME / self.IR_REPEAT_INTERVAL))
+        ramp_after = max(
+            1, round(self.REPEAT_DELAY / self.IR_REPEAT_INTERVAL))
 
         actions = []
         for line in lines:
@@ -495,6 +507,8 @@ class IrReceiver:
 
             if action not in self.REPEATABLE_ACTIONS:
                 continue
+            if count < ramp_after:
+                continue  # still inside the auto-repeat delay
             if actions and actions[-1][1] == action:
                 continue  # same burst; one is already queued
             actions.append((key, action))

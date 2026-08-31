@@ -262,13 +262,14 @@ def test_closed_socket_does_not_spin(monkeypatch, tmp_path):
 def test_held_key_fires_once_but_volume_repeats(monkeypatch, tmp_path):
     r = _ir(monkeypatch, tmp_path)
     r._running = True
-    # Each frame in its own recv(), so nothing is batched and every volume
-    # repeat is acted on - the behaviour when the handler keeps up.
+    # Each frame in its own recv(), so nothing is batched. The volume repeat
+    # is past the auto-repeat delay; the next_track repeat is dropped because
+    # next_track is not repeatable.
     r._consume(_FakeSocket([
         "0001 00 KEY_NEXT devinput\n",
         "0001 01 KEY_NEXT devinput\n",
         "0002 00 KEY_VOLUMEUP devinput\n",
-        "0002 01 KEY_VOLUMEUP devinput\n",
+        "0002 09 KEY_VOLUMEUP devinput\n",
         "0003 00 KEY_NOTAKEY devinput\n",
     ]))
     actions = [c.args[0] for c in r.action_handler.handle_action.call_args_list]
@@ -543,10 +544,11 @@ def test_each_batch_advances_the_ramp_once(monkeypatch, tmp_path):
     r = _ir(monkeypatch, tmp_path)
     r._running = True
 
+    # Counts past the auto-repeat delay, so each batch is a real ramp step.
     r._consume(_FakeSocket([
-        ["0002 00 KEY_VOLUMEDOWN toem_nec\n", "0002 01 KEY_VOLUMEDOWN toem_nec\n"],
-        ["0002 02 KEY_VOLUMEDOWN toem_nec\n", "0002 03 KEY_VOLUMEDOWN toem_nec\n"],
-        ["0002 04 KEY_VOLUMEDOWN toem_nec\n"],
+        ["0002 00 KEY_VOLUMEDOWN toem_nec\n", "0002 05 KEY_VOLUMEDOWN toem_nec\n"],
+        ["0002 06 KEY_VOLUMEDOWN toem_nec\n", "0002 07 KEY_VOLUMEDOWN toem_nec\n"],
+        ["0002 08 KEY_VOLUMEDOWN toem_nec\n"],
     ]))
 
     actions = [c.args[0] for c in r.action_handler.handle_action.call_args_list]
@@ -691,3 +693,32 @@ def test_an_ir_hold_split_across_batches_still_fires_once(monkeypatch, tmp_path)
 
     actions = [c.args[0] for c in r.action_handler.handle_action.call_args_list]
     assert actions.count("next_episode") == 1, actions
+
+
+def test_a_short_press_of_volume_steps_once(monkeypatch, tmp_path):
+    """One press must be one step
+
+    Without a delay the first repeat frame - ~110ms in - already counted as a
+    second step, so an ordinary press of volume down gave three steps on toem
+    while a quicker press of volume up gave one. Observed 2026-08-31.
+    """
+    r = _ir(monkeypatch, tmp_path)
+    r._running = True
+    # A press plus two repeats: ~220ms, a perfectly ordinary tap.
+    r._consume(_FakeSocket([_ir_hold_frames("KEY_VOLUMEDOWN", 2)]))
+
+    actions = [c.args[0] for c in r.action_handler.handle_action.call_args_list]
+    assert actions == ["volume_down"]
+
+
+def test_holding_volume_still_ramps(monkeypatch, tmp_path):
+    """The delay must not disable the ramp, only postpone it"""
+    r = _ir(monkeypatch, tmp_path)
+    r._running = True
+    frames = _ir_hold_frames("KEY_VOLUMEDOWN", 12)
+    # Delivered one at a time, as they arrive when the handler keeps up.
+    r._consume(_FakeSocket(list(frames)))
+
+    actions = [c.args[0] for c in r.action_handler.handle_action.call_args_list]
+    assert len(actions) > 1, "a held key must keep stepping"
+    assert set(actions) == {"volume_down"}
