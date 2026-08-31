@@ -346,7 +346,24 @@ def handle_already_playing(player):
 
 
 def shutdown(player, sync_done=None):
-    """Shutdown computer"""
+    """Shutdown computer
+
+    SHUTDOWN_DRY_RUN=true makes this announce itself and return, leaving the
+    player running. It is for testing the *gesture* on a live box without
+    losing the session each time - DEVELOPMENT=true does not serve that,
+    because it exits the process and systemd restarts it.
+
+    Deliberately loud, and warned about again at startup: a box left in dry
+    run never powers down, which is the whole of item 34 - the bank drains
+    every night instead.
+    """
+    if os.getenv("SHUTDOWN_DRY_RUN", "").lower() == "true":
+        logging.warning(
+            "SHUTDOWN_DRY_RUN is set: the shutdown gesture fired and would "
+            "have powered the device off. Staying up.")
+        play_sound("shutdown")
+        return
+
     play_sound("shutdown", blocking=True)
     if player:
         player.pause_playback()
@@ -371,6 +388,14 @@ def shutdown(player, sync_done=None):
 def verify_env_file(config):
     if not config:
         raise ValueError(".env file is missing or empty.")
+
+    # Said at every startup, not only when the gesture fires: a box that
+    # cannot power itself off drains the bank overnight, and the symptom
+    # (item 34) looks nothing like a leftover test flag.
+    if config.get("SHUTDOWN_DRY_RUN", "").lower() == "true":
+        logging.warning(
+            "SHUTDOWN_DRY_RUN is set: this device will NOT power off. "
+            "Remove it from .env when testing is done.")
 
     required = [
         "SPOTIFY_USERCREDS",

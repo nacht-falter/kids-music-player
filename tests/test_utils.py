@@ -542,3 +542,48 @@ def test_create_player_explains_once(monkeypatch):
              "playback_state": None}, retries=3, delay=0)
     assert result is None
     assert explain.call_count == 1
+
+
+# --- testing the shutdown gesture without losing the box ------------------
+
+def test_dry_run_announces_and_returns(monkeypatch, caplog):
+    """The gesture must be testable on a live device without powering it off
+
+    DEVELOPMENT=true does not serve this: it exits the process, so systemd
+    restarts the player and the session is lost on every attempt.
+    """
+    monkeypatch.setenv("SHUTDOWN_DRY_RUN", "true")
+    player = MagicMock()
+    with patch("utils.play_sound") as play, \
+            patch("utils.os.system") as system, \
+            patch("utils.os._exit") as hard_exit, \
+            caplog.at_level("WARNING"):
+        shutdown(player)
+
+    system.assert_not_called()
+    hard_exit.assert_not_called()
+    player.pause_playback.assert_not_called()
+    play.assert_called_once_with("shutdown")
+    assert "SHUTDOWN_DRY_RUN" in caplog.text
+
+
+def test_without_the_flag_it_really_shuts_down(monkeypatch):
+    monkeypatch.delenv("SHUTDOWN_DRY_RUN", raising=False)
+    monkeypatch.delenv("DEVELOPMENT", raising=False)
+    with patch("utils.play_sound"), patch("utils.os.system") as system:
+        shutdown(MagicMock())
+    system.assert_called_once()
+
+
+def test_startup_warns_when_dry_run_is_left_on(caplog):
+    """A box that cannot power off drains the bank, and the symptom looks
+    nothing like a leftover test flag - so say it at every startup.
+    """
+    config = {
+        "SPOTIFY_USERCREDS": "x", "SPOTIFY_REFRESH_TOKEN": "x",
+        "SPOTIFY_DEVICE_ID": "x", "DATABASE_URL": "x", "RFID_READER": "x",
+        "SHUTDOWN_DRY_RUN": "true",
+    }
+    with caplog.at_level("WARNING"):
+        verify_env_file(config)
+    assert "will NOT power off" in caplog.text
