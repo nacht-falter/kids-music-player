@@ -573,17 +573,3 @@ def test_without_the_flag_it_really_shuts_down(monkeypatch):
     with patch("utils.play_sound"), patch("utils.os.system") as system:
         shutdown(MagicMock())
     system.assert_called_once()
-
-
-def test_startup_warns_when_dry_run_is_left_on(caplog):
-    """A box that cannot power off drains the bank, and the symptom looks
-    nothing like a leftover test flag - so say it at every startup.
-    """
-    config = {
-        "SPOTIFY_USERCREDS": "x", "SPOTIFY_REFRESH_TOKEN": "x",
-        "SPOTIFY_DEVICE_ID": "x", "DATABASE_URL": "x", "RFID_READER": "x",
-        "SHUTDOWN_DRY_RUN": "true",
-    }
-    with caplog.at_level("WARNING"):
-        verify_env_file(config)
-    assert "will NOT power off" in caplog.text

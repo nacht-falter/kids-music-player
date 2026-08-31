@@ -200,3 +200,26 @@ def test_idle_without_a_card_is_not_activity(app):
         app.record_playback_activity()
 
     assert app.last_activity == 0
+
+
+def test_startup_warns_when_the_shutdown_dry_run_is_left_on(monkeypatch, caplog, tmp_path):
+    """A box that cannot power itself off drains the bank all night (item 34),
+    and the symptom looks nothing like a leftover test flag - so say it every
+    startup. It has to come after logging is configured; in verify_env_file,
+    which runs first, the warning went nowhere.
+    """
+    for key, value in {
+        "SPOTIFY_USERCREDS": "x", "SPOTIFY_REFRESH_TOKEN": "x",
+        "SPOTIFY_DEVICE_ID": "x", "DATABASE_URL": "x", "RFID_READER": "x",
+        "APP_NAME": "dryruntest", "SHUTDOWN_DRY_RUN": "true",
+    }.items():
+        monkeypatch.setenv(key, value)
+
+    application = RFIDMusicPlayer()
+    monkeypatch.chdir(tmp_path)
+    with patch("main.load_dotenv"), \
+            patch("main.os.path.dirname", return_value=str(tmp_path)), \
+            caplog.at_level("WARNING"):
+        application.initialize()
+
+    assert "will NOT power off" in caplog.text

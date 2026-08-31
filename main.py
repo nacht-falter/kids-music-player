@@ -77,6 +77,16 @@ class RFIDMusicPlayer:
             ]
         )
 
+        # After basicConfig, not in verify_env_file: that runs before logging
+        # exists, so the warning went nowhere. Said at every startup because
+        # the failure mode of leaving this on is invisible and expensive - a
+        # box that cannot power itself off keeps the bank awake all night
+        # (item 34), and the symptom looks nothing like a leftover test flag.
+        if os.getenv("SHUTDOWN_DRY_RUN", "").lower() == "true":
+            logging.warning(
+                "SHUTDOWN_DRY_RUN is set: this device will NOT power off. "
+                "Remove it from .env when testing is done.")
+
         idle_time_env = os.environ.get("IDLE_TIME")
         self.idle_time = int(idle_time_env) if idle_time_env else 3600
 

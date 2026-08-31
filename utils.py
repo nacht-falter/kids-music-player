@@ -389,14 +389,6 @@ def verify_env_file(config):
     if not config:
         raise ValueError(".env file is missing or empty.")
 
-    # Said at every startup, not only when the gesture fires: a box that
-    # cannot power itself off drains the bank overnight, and the symptom
-    # (item 34) looks nothing like a leftover test flag.
-    if config.get("SHUTDOWN_DRY_RUN", "").lower() == "true":
-        logging.warning(
-            "SHUTDOWN_DRY_RUN is set: this device will NOT power off. "
-            "Remove it from .env when testing is done.")
-
     required = [
         "SPOTIFY_USERCREDS",
         "SPOTIFY_REFRESH_TOKEN",
