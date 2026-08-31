@@ -30,7 +30,7 @@ class PlayerActionHandler:
     # confirmation at all. A hold cannot be forged that way: contact bounce is
     # milliseconds and an IR dropout restarts the repeat count rather than
     # sustaining it. It is also the universal device idiom.
-    HOLD_TIME = 1.0
+    HOLD_TIME = 2.0
 
     # Actions a hold turns into something else. The plain press still fires
     # first, and for shutdown that press is deliberately silent.
@@ -349,22 +349,45 @@ class GpioButtonHandler:
             button = Button(pin, bounce_time=self.BUTTON_BOUNCE_TIME,
                             hold_time=PlayerActionHandler.HOLD_TIME,
                             hold_repeat=False)
-            button.when_pressed = lambda a=action: self.action_handler.handle_action(
-                a)
-
-            # hold_repeat=False, so this fires once per hold rather than
-            # every hold_time. Verified on toem2's own button 2026-08-31: a
-            # 178ms tap fired when_pressed only, a hold fired when_held once
-            # at exactly 1.001s. gpiozero 1.6.2 does the timing in its own
-            # thread, so a slow handler cannot distort it - which is what
-            # sank the double-press gesture in item 24.
             hold = PlayerActionHandler.HOLD_ACTIONS.get(action)
+
             if hold:
-                button.when_held = lambda h=hold: self.action_handler.handle_action(
-                    h)
+                self._bind_tap_or_hold(button, action, hold)
+            else:
+                button.when_pressed = (
+                    lambda a=action: self.action_handler.handle_action(a))
 
             # Keep reference to avoid garbage collection:
             self.buttons.append(button)
+
+    def _bind_tap_or_hold(self, button, action, hold):
+        """Make a tap and a hold mutually exclusive on one button
+
+        when_pressed fires the instant the button goes down, so wiring the tap
+        there means a hold does both: holding next skipped a track *and* then
+        changed episode, and on an album it skipped a track where it should
+        have done nothing at all.
+
+        So the tap fires on release instead, and only if the hold did not
+        fire. The delay is the length of the press - imperceptible for a tap,
+        and the alternative is acting before knowing which gesture it was.
+        """
+        state = {"held": False}
+
+        def on_held():
+            state["held"] = True
+            self.action_handler.handle_action(hold)
+
+        def on_released():
+            if not state["held"]:
+                self.action_handler.handle_action(action)
+            state["held"] = False
+
+        # hold_repeat=False, so on_held runs once per hold rather than every
+        # hold_time. gpiozero times it in its own thread, so a slow handler
+        # cannot distort it - which is what sank the gesture in item 24.
+        button.when_held = on_held
+        button.when_released = on_released
 
 
 class IrReceiver:

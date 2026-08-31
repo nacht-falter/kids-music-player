@@ -411,7 +411,21 @@ class _FakeButton:
         self.hold_repeat = hold_repeat
         self.when_pressed = None
         self.when_held = None
+        self.when_released = None
         _FakeButton.instances.append(self)
+
+    def tap(self):
+        if self.when_pressed:
+            self.when_pressed()
+        if self.when_released:
+            self.when_released()
+
+    def hold(self):
+        if self.when_pressed:
+            self.when_pressed()
+        self.when_held()
+        if self.when_released:
+            self.when_released()
 
 
 def _build_gpio_handler():
@@ -454,24 +468,52 @@ def test_only_buttons_with_a_hold_action_are_wired_for_hold():
                 "%s has a hold action but no when_held" % action)
             assert button.hold_time == buttons.PlayerActionHandler.HOLD_TIME
             assert button.hold_repeat is False, "a hold must fire once"
+            # The tap fires on release, not press: when_pressed would act
+            # before we know which gesture it is.
+            assert button.when_pressed is None, (
+                "%s acts on press, so a hold would do both" % action)
+            assert button.when_released is not None
         else:
             assert button.when_held is None, (
                 "%s has no hold action but was wired for hold" % action)
+            assert button.when_pressed is not None
 
 
-def test_holding_a_gpio_button_fires_press_then_hold():
-    """The tap still fires - for shutdown that is the acknowledging sound"""
+def _gpio_button(action):
     handler, created = _build_gpio_handler()
     handler.action_handler.handle_action = MagicMock()
-    pin = [p for p, a in buttons.GPIO_ACTIONS.items() if a == "shutdown"][0]
-    button = [b for b in created if b.pin == pin][0]
+    pin = [p for p, a in buttons.GPIO_ACTIONS.items() if a == action][0]
+    return handler, [b for b in created if b.pin == pin][0]
 
-    button.when_pressed()
-    button.when_held()
 
-    assert [c.args[0] for c in
-            handler.action_handler.handle_action.call_args_list] == [
-        "shutdown", "shutdown_hold"]
+def _fired(handler):
+    return [c.args[0] for c in
+            handler.action_handler.handle_action.call_args_list]
+
+
+def test_tapping_fires_only_the_tap_action():
+    handler, button = _gpio_button("next_track")
+    button.tap()
+    assert _fired(handler) == ["next_track"]
+
+
+def test_holding_fires_only_the_hold_action():
+    """when_pressed fired the instant the button went down, so a hold did
+    both: holding next skipped a track *and* changed episode, and on an album
+    it skipped a track where it should have done nothing at all.
+    """
+    handler, button = _gpio_button("next_track")
+    button.hold()
+    assert _fired(handler) == ["next_episode"], (
+        "a hold must not also fire the tap action")
+
+
+def test_a_hold_then_a_tap_both_behave():
+    """The held flag must reset, or every later tap is swallowed"""
+    handler, button = _gpio_button("previous_track")
+    button.hold()
+    button.tap()
+    assert _fired(handler) == ["previous_episode", "previous_track"]
 
 
 def test_a_backlog_of_repeats_collapses_to_one_step(monkeypatch, tmp_path):
