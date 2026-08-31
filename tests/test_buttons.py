@@ -722,3 +722,30 @@ def test_holding_volume_still_ramps(monkeypatch, tmp_path):
     actions = [c.args[0] for c in r.action_handler.handle_action.call_args_list]
     assert len(actions) > 1, "a held key must keep stepping"
     assert set(actions) == {"volume_down"}
+
+
+def test_volume_at_an_end_stop_makes_one_sound_not_two(handler):
+    """The beep used to play first and the refusal second - two noises"""
+    handler.mixer_control = "PCM"
+    with patch.object(handler, "_current_volume", return_value=0), \
+            patch("buttons.utils") as mock_utils:
+        handler.handle_action("volume_down")
+
+    assert [c.args[0] for c in mock_utils.play_sound.call_args_list] == ["error"]
+
+
+def test_volume_beeps_after_the_change_not_during_it(handler):
+    """Beeping first meant amixer ran while the tone was still sounding, so
+    the beep changed level mid-play. Afterwards it is one clean sound, at the
+    level just selected.
+    """
+    handler.mixer_control = "PCM"
+    order = []
+    with patch.object(handler, "_current_volume", return_value=50), \
+            patch("buttons.subprocess.run",
+                  side_effect=lambda *a, **k: order.append("amixer")), \
+            patch("buttons.utils") as mock_utils:
+        mock_utils.play_sound.side_effect = lambda name: order.append(name)
+        handler.handle_action("volume_down")
+
+    assert order == ["amixer", "volume_down"]

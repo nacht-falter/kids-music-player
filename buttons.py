@@ -209,26 +209,35 @@ class PlayerActionHandler:
             return None
 
     def _set_volume(self, change):
-        """Nudge the mixer by `change` percent, clamped to VOLUME_MAX"""
+        """Nudge the mixer by `change` percent, clamped to VOLUME_MAX
+
+        Returns True when the volume actually moved, so the caller can play
+        its feedback afterwards. Two reasons for that order. At an end stop
+        this used to play the volume beep *and* then the error sound - two
+        noises for one press. And elsewhere the beep was started, then amixer
+        ran while it was still sounding, so the tone changed level mid-play;
+        beeping afterwards means it is one clean sound at the level you just
+        selected, which is also the more useful feedback.
+        """
         current = self._current_volume()
         if current is None:
             utils.play_sound("error")
-            return
+            return False
 
         # Refuse rather than clamp when already past an end stop. Clamping was
         # worse than doing nothing: spotifyd sets initial_volume to 100, so a
         # volume-*up* press at 100% would have pulled it down to VOLUME_MAX.
         if change > 0 and current >= self.VOLUME_MAX:
             utils.play_sound("error")
-            return
+            return False
         if change < 0 and current <= 0:
             utils.play_sound("error")
-            return
+            return False
 
         target = max(0, min(self.VOLUME_MAX, current + change))
         if target == current:
             utils.play_sound("error")
-            return
+            return False
 
         try:
             subprocess.run(
@@ -236,9 +245,11 @@ class PlayerActionHandler:
                 check=True, timeout=5)
             logging.info("Volume %d%% -> %d%% (%s)",
                          current, target, self.mixer_control)
+            return True
         except (OSError, subprocess.SubprocessError) as e:
             logging.error("Could not set the volume: %s", e)
             utils.play_sound("error")
+            return False
 
     def _handle_episode(self, step, label):
         """Move a whole episode, or decline politely if there is nowhere to go
@@ -278,12 +289,12 @@ class PlayerActionHandler:
         self._handle_episode(-1, "previous episode")
 
     def _handle_volume_up(self):
-        utils.play_sound("volume_up")
-        self._set_volume(+self.VOLUME_STEP)
+        if self._set_volume(+self.VOLUME_STEP):
+            utils.play_sound("volume_up")
 
     def _handle_volume_down(self):
-        utils.play_sound("volume_down")
-        self._set_volume(-self.VOLUME_STEP)
+        if self._set_volume(-self.VOLUME_STEP):
+            utils.play_sound("volume_down")
 
     def _create_and_play_last_player(self):
         try:
