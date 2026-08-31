@@ -35,21 +35,21 @@ class PlayerActionHandler:
     # Actions a hold turns into something else. The plain press still fires
     # first, and for shutdown that press is deliberately silent.
     #
-    # The rule the child learns is one rule: a hold jumps further than a tap.
-    # Tap next/previous moves a track, holding it moves a whole episode. That
-    # is also the only way back through a series - re-scanning the card
-    # advances an episode but has no reverse, so previous_episode() has been
-    # implemented and unreachable.
+    # Only shutdown. Holding next/previous for a whole episode was built and
+    # then removed on 2026-08-31: unintuitive, and unreliable in a way that is
+    # not fixable cheaply. Unintuitive because a hold meant "jump further" on a
+    # series and "nothing at all" on an album, and no device does it this way -
+    # press-and-hold is fast-forward on some players and "skip to start of
+    # track" on others, while Toniebox and Yoto both give seeking a separate
+    # gesture rather than a duration. Unreliable because lircd sends no release
+    # event, so on the IR box the tap can only be told from a hold by waiting
+    # ~250ms before acting on every single press. That cost buys a gesture
+    # nobody asked for.
     #
-    # No device convention was copied here because none exists: press-and-hold
-    # is fast-forward on some players and "skip to start of track" on others,
-    # and the two closest boxes - Toniebox and Yoto - give seeking a separate
-    # gesture (a tilt, a knob) rather than a duration. Checked 2026-08-31.
-    HOLD_ACTIONS = {
-        "shutdown": "shutdown_hold",
-        "next_track": "next_episode",
-        "previous_track": "previous_episode",
-    }
+    # Changing episode remains a card re-scan, which is a discrete event
+    # needing no window at all. spotify.previous_episode() stays implemented
+    # and unreachable, as it was before.
+    HOLD_ACTIONS = {"shutdown": "shutdown_hold"}
 
     def __init__(self, get_player, set_player, database_url, player_lock, reset_last_activity):
         self.get_player = get_player
@@ -75,8 +75,6 @@ class PlayerActionHandler:
             "toggle_playback": self._handle_toggle_playback,
             "next_track": self._handle_next_track,
             "previous_track": self._handle_previous_track,
-            "next_episode": self._handle_next_episode,
-            "previous_episode": self._handle_previous_episode,
             "volume_up": self._handle_volume_up,
             "volume_down": self._handle_volume_down,
         }
@@ -250,43 +248,6 @@ class PlayerActionHandler:
             logging.error("Could not set the volume: %s", e)
             utils.play_sound("error")
             return False
-
-    def _handle_episode(self, step, label):
-        """Move a whole episode, or decline politely if there is nowhere to go
-
-        A card that is a plain album has no episodes. Declining with a neutral
-        tone rather than the error sound is deliberate: the child pressed a
-        real button in a legitimate way and there is simply nothing there, so
-        "you did something wrong" would be both untrue and discouraging.
-
-        Restarting the album instead - what re-scanning the card does - was
-        considered and rejected: on six of the nine album cards on toem2 that
-        would throw away a child's place in a twenty-minute Hörspiel, and the
-        card already offers that gesture for anyone who wants it.
-        """
-        with self.player_lock:
-            player = self.get_player()
-            if not player:
-                logging.warning("Player is not initialized. Cannot change episode.")
-                utils.play_sound("error")
-                return
-            if not getattr(player, "is_series", False):
-                logging.info("Not a series; %s does nothing here.", label)
-                utils.play_sound("nothing_here")
-                return
-
-            logging.info("%s action triggered.", label.capitalize())
-            utils.play_sound("next_track" if step > 0 else "previous_track")
-            if step > 0:
-                player.next_episode()
-            else:
-                player.previous_episode()
-
-    def _handle_next_episode(self):
-        self._handle_episode(+1, "next episode")
-
-    def _handle_previous_episode(self):
-        self._handle_episode(-1, "previous episode")
 
     def _handle_volume_up(self):
         if self._set_volume(+self.VOLUME_STEP):

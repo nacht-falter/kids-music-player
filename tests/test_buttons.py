@@ -493,28 +493,37 @@ def _fired(handler):
 
 
 def test_tapping_fires_only_the_tap_action():
-    handler, button = _gpio_button("next_track")
+    handler, button = _gpio_button("shutdown")
     button.tap()
-    assert _fired(handler) == ["next_track"]
+    assert _fired(handler) == ["shutdown"]
 
 
 def test_holding_fires_only_the_hold_action():
-    """when_pressed fired the instant the button went down, so a hold did
-    both: holding next skipped a track *and* changed episode, and on an album
-    it skipped a track where it should have done nothing at all.
+    """when_pressed fires the instant the button goes down, so wiring the tap
+    there would make a hold do both
     """
-    handler, button = _gpio_button("next_track")
+    handler, button = _gpio_button("shutdown")
     button.hold()
-    assert _fired(handler) == ["next_episode"], (
+    assert _fired(handler) == ["shutdown_hold"], (
         "a hold must not also fire the tap action")
 
 
 def test_a_hold_then_a_tap_both_behave():
     """The held flag must reset, or every later tap is swallowed"""
-    handler, button = _gpio_button("previous_track")
+    handler, button = _gpio_button("shutdown")
     button.hold()
     button.tap()
-    assert _fired(handler) == ["previous_episode", "previous_track"]
+    assert _fired(handler) == ["shutdown_hold", "shutdown"]
+
+
+def test_next_and_previous_act_on_press_again():
+    """With no hold to wait for, they must not pay the release delay"""
+    _, created = _build_gpio_handler()
+    by_pin = {b.pin: b for b in created}
+    for pin, action in buttons.GPIO_ACTIONS.items():
+        if action in ("next_track", "previous_track"):
+            assert by_pin[pin].when_pressed is not None
+            assert by_pin[pin].when_held is None
 
 
 def test_a_backlog_of_repeats_collapses_to_one_step(monkeypatch, tmp_path):
@@ -581,67 +590,6 @@ def test_a_frame_split_across_reads_is_not_lost(monkeypatch, tmp_path):
     assert actions == ["next_track"]
 
 
-# --- holding next/previous: a whole episode -------------------------------
-
-def _series(playing=True):
-    player = MagicMock()
-    player.is_series = True
-    return player
-
-
-def _album():
-    player = MagicMock()
-    player.is_series = False
-    return player
-
-
-def test_holding_next_advances_an_episode(handler):
-    player = _series()
-    handler.get_player = MagicMock(return_value=player)
-    with patch("buttons.utils"):
-        handler.handle_action("next_episode")
-    player.next_episode.assert_called_once()
-    player.next_track.assert_not_called()
-
-
-def test_holding_previous_goes_back_an_episode(handler):
-    """The only way back. Re-scanning the card advances but never reverses,
-    so previous_episode() was implemented and reachable from nothing.
-    """
-    player = _series()
-    handler.get_player = MagicMock(return_value=player)
-    with patch("buttons.utils"):
-        handler.handle_action("previous_episode")
-    player.previous_episode.assert_called_once()
-    player.previous_track.assert_not_called()
-
-
-def test_holding_on_an_album_declines_without_an_error(handler):
-    """An album has no episodes. The child pressed a real button correctly,
-    so this is not an error - and restarting the album instead would throw
-    away their place in a twenty-minute Hoerspiel.
-    """
-    player = _album()
-    handler.get_player = MagicMock(return_value=player)
-    with patch("buttons.utils") as mock_utils:
-        handler.handle_action("next_episode")
-        handler.handle_action("previous_episode")
-
-    player.next_episode.assert_not_called()
-    player.previous_episode.assert_not_called()
-    player.next_track.assert_not_called()
-    player.restart_playback.assert_not_called()
-    assert [c.args[0] for c in mock_utils.play_sound.call_args_list] == [
-        "nothing_here", "nothing_here"]
-
-
-def test_holding_with_no_player_is_an_error(handler):
-    handler.get_player = MagicMock(return_value=None)
-    with patch("buttons.utils") as mock_utils:
-        handler.handle_action("next_episode")
-    mock_utils.play_sound.assert_called_once_with("error")
-
-
 # --- holding an IR key: the repeat counter is the clock -------------------
 
 def _ir_hold_frames(key, count):
@@ -676,23 +624,23 @@ def test_a_second_ir_hold_fires_again(monkeypatch, tmp_path):
     """A fresh 00 frame rearms, so two holds are two actions"""
     r = _ir(monkeypatch, tmp_path)
     r._running = True
-    r._consume(_FakeSocket([_ir_hold_frames("KEY_NEXT", 30),
-                            _ir_hold_frames("KEY_NEXT", 30)]))
+    r._consume(_FakeSocket([_ir_hold_frames("KEY_POWER", 30),
+                            _ir_hold_frames("KEY_POWER", 30)]))
 
     actions = [c.args[0] for c in r.action_handler.handle_action.call_args_list]
-    assert actions == ["next_track", "next_episode",
-                       "next_track", "next_episode"]
+    assert actions == ["shutdown", "shutdown_hold",
+                       "shutdown", "shutdown_hold"]
 
 
 def test_an_ir_hold_split_across_batches_still_fires_once(monkeypatch, tmp_path):
     """A burst spans recv() boundaries; the hold must not fire per batch"""
     r = _ir(monkeypatch, tmp_path)
     r._running = True
-    frames = _ir_hold_frames("KEY_VOLUMEDOWN", 0) + _ir_hold_frames("KEY_NEXT", 30)
+    frames = _ir_hold_frames("KEY_VOLUMEDOWN", 0) + _ir_hold_frames("KEY_POWER", 30)
     r._consume(_FakeSocket([frames[:5], frames[5:20], frames[20:]]))
 
     actions = [c.args[0] for c in r.action_handler.handle_action.call_args_list]
-    assert actions.count("next_episode") == 1, actions
+    assert actions.count("shutdown_hold") == 1, actions
 
 
 def test_a_short_press_of_volume_steps_once(monkeypatch, tmp_path):
