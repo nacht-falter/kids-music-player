@@ -7,6 +7,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 import pytest
 from unittest.mock import MagicMock, patch
 
+import buttons
+
 
 @pytest.fixture
 def handler():
@@ -37,11 +39,49 @@ def test_single_press_only_confirms(handler):
         mock_utils.shutdown.assert_not_called()
 
 
+def _press_again(handler, after=None):
+    """A second press far enough from the first to be a deliberate one
+
+    Rather than sleeping: rewind the arming timestamp, so the handler sees
+    the interval it would have seen in real time.
+    """
+    gap = handler.MIN_CONFIRM_INTERVAL + 0.05 if after is None else after
+    if handler.confirm_armed_at is not None:
+        handler.confirm_armed_at -= gap
+    handler.handle_action("shutdown")
+
+
 def test_second_press_shuts_down(handler):
     with patch("buttons.utils") as mock_utils:
         handler.handle_action("shutdown")
-        handler.handle_action("shutdown")
+        _press_again(handler)
         mock_utils.shutdown.assert_called_once()
+
+
+def test_a_confirmation_too_fast_to_be_a_press_is_ignored(handler):
+    """One physical press delivered twice must not confirm itself
+
+    A bouncing contact fires when_pressed again within milliseconds, and
+    lircd restarts its repeat count after a brief IR dropout. Measured on
+    toem2: 23ms between arming and "confirmation", against a median of 972ms.
+    """
+    with patch("buttons.utils") as mock_utils:
+        handler.handle_action("shutdown")
+        handler.handle_action("shutdown")  # same instant - bounce
+        mock_utils.shutdown.assert_not_called()
+
+
+def test_the_arming_survives_a_bounce(handler):
+    """Ignoring the bounce must not disarm - the real press still has to work"""
+    with patch("buttons.utils") as mock_utils:
+        handler.handle_action("shutdown")
+        handler.handle_action("shutdown")  # bounce, ignored
+        mock_utils.shutdown.assert_not_called()
+
+        _press_again(handler)
+        mock_utils.shutdown.assert_called_once()
+        # Still one arming, so the confirmation sound did not play twice.
+        assert mock_utils.play_sound.call_count == 1
 
 
 def test_confirmation_expires(handler):
@@ -63,13 +103,13 @@ def test_third_rapid_press_still_shuts_down(handler):
     """`== 2` left a rapid triple-press matching neither branch"""
     with patch("buttons.utils") as mock_utils:
         handler.handle_action("shutdown")
-        handler.handle_action("shutdown")
+        _press_again(handler)
         mock_utils.shutdown.reset_mock()
 
         # Counter was cleared, so this starts a fresh confirmation.
         handler.handle_action("shutdown")
         mock_utils.shutdown.assert_not_called()
-        handler.handle_action("shutdown")
+        _press_again(handler)
         mock_utils.shutdown.assert_called_once()
 
 
@@ -77,7 +117,7 @@ def test_other_button_cancels_the_arming(handler):
     with patch("buttons.utils") as mock_utils:
         handler.handle_action("shutdown")
         handler.handle_action("next_track")
-        handler.handle_action("shutdown")
+        _press_again(handler)
         mock_utils.shutdown.assert_not_called()
 
 
@@ -252,26 +292,32 @@ def _ir(monkeypatch, tmp_path):
     return r
 
 
-class _FakeSocketFile:
-    """Yields lines, then behaves as a closed socket: "" forever"""
-    def __init__(self, lines):
-        self.lines = list(lines)
+class _FakeSocket:
+    """Yields batches of frames, then behaves as a closed socket: b"" forever
+
+    Each element of *batches* is delivered by one recv(), which is how a real
+    socket hands over everything that arrived while the previous batch was
+    being handled - the case _coalesce() exists for.
+    """
+    def __init__(self, batches):
+        self.batches = [b if isinstance(b, (list, tuple)) else [b]
+                        for b in batches]
         self.reads_after_close = 0
 
-    def readline(self):
-        if self.lines:
-            return self.lines.pop(0)
+    def recv(self, _n):
+        if self.batches:
+            return "".join(self.batches.pop(0)).encode()
         self.reads_after_close += 1
         if self.reads_after_close > 1000:
             raise AssertionError("busy loop: kept reading a closed socket")
-        return ""
+        return b""
 
 
 def test_closed_socket_does_not_spin(monkeypatch, tmp_path):
     """readline() returns "" forever once closed; continuing pegs the CPU"""
     r = _ir(monkeypatch, tmp_path)
     r._running = True
-    f = _FakeSocketFile(["0001 00 KEY_NEXT devinput\n"])
+    f = _FakeSocket(["0001 00 KEY_NEXT devinput\n"])
 
     r._consume(f)   # must return, not spin
 
@@ -282,7 +328,9 @@ def test_closed_socket_does_not_spin(monkeypatch, tmp_path):
 def test_held_key_fires_once_but_volume_repeats(monkeypatch, tmp_path):
     r = _ir(monkeypatch, tmp_path)
     r._running = True
-    r._consume(_FakeSocketFile([
+    # Each frame in its own recv(), so nothing is batched and every volume
+    # repeat is acted on - the behaviour when the handler keeps up.
+    r._consume(_FakeSocket([
         "0001 00 KEY_NEXT devinput\n",
         "0001 01 KEY_NEXT devinput\n",
         "0002 00 KEY_VOLUMEUP devinput\n",
@@ -299,7 +347,7 @@ def test_a_failing_action_does_not_end_ir_input(monkeypatch, tmp_path):
     r._running = True
     r.action_handler.handle_action.side_effect = [RuntimeError("boom"), None]
 
-    r._consume(_FakeSocketFile([
+    r._consume(_FakeSocket([
         "0001 00 KEY_NEXT devinput\n",
         "0002 00 KEY_PLAY devinput\n",
     ]))
@@ -416,3 +464,91 @@ class TestButtonsNeverChangeEpisode:
 
         assert player.previous_track.call_count == 2
         player.previous_episode.assert_not_called()
+
+
+def test_gpio_buttons_are_debounced():
+    """gpiozero does not debounce by default, and the default is what bit us
+
+    Without bounce_time a single physical press fires when_pressed more than
+    once, which the shutdown handler reads as its own confirmation.
+    """
+    created = []
+
+    class FakeButton:
+        def __init__(self, pin, bounce_time=None):
+            created.append((pin, bounce_time))
+            self.when_pressed = None
+
+    with patch("buttons.Button", FakeButton), \
+            patch.object(buttons.PlayerActionHandler, "_detect_mixer_control",
+                         return_value=None):
+        buttons.GpioButtonHandler(
+            lambda: None, lambda _p: None, "db", threading.Lock(), lambda: None)
+
+    assert created, "no buttons were created"
+    for pin, bounce_time in created:
+        assert bounce_time == buttons.GpioButtonHandler.BUTTON_BOUNCE_TIME, (
+            "pin %s was created without debouncing" % pin)
+
+
+def test_a_backlog_of_repeats_collapses_to_one_step(monkeypatch, tmp_path):
+    """Held volume must stop when the key is released, not seconds later
+
+    lircd emits a repeat every ~110ms; one volume step costs ~250ms of amixer.
+    Acting on every frame cannot keep up, so the surplus queues in the socket
+    and the volume goes on moving after release - measured on toem 2026-08-31
+    at 45 frames consumed at a median of 244ms.
+    """
+    r = _ir(monkeypatch, tmp_path)
+    r._running = True
+
+    # One recv() delivering everything that piled up during a hold.
+    burst = ["0002 00 KEY_VOLUMEDOWN toem_nec\n"] + [
+        "0002 %02x KEY_VOLUMEDOWN toem_nec\n" % n for n in range(1, 16)]
+    r._consume(_FakeSocket([burst]))
+
+    actions = [c.args[0] for c in r.action_handler.handle_action.call_args_list]
+    assert actions == ["volume_down"], (
+        "16 buffered frames became %d steps; the ramp would outlive the press"
+        % len(actions))
+
+
+def test_each_batch_advances_the_ramp_once(monkeypatch, tmp_path):
+    """Collapsing must not stall the ramp - a held key still steps per batch"""
+    r = _ir(monkeypatch, tmp_path)
+    r._running = True
+
+    r._consume(_FakeSocket([
+        ["0002 00 KEY_VOLUMEDOWN toem_nec\n", "0002 01 KEY_VOLUMEDOWN toem_nec\n"],
+        ["0002 02 KEY_VOLUMEDOWN toem_nec\n", "0002 03 KEY_VOLUMEDOWN toem_nec\n"],
+        ["0002 04 KEY_VOLUMEDOWN toem_nec\n"],
+    ]))
+
+    actions = [c.args[0] for c in r.action_handler.handle_action.call_args_list]
+    assert actions == ["volume_down", "volume_down", "volume_down"]
+
+
+def test_distinct_presses_in_one_batch_are_all_kept(monkeypatch, tmp_path):
+    """A 00 frame is a real press and must never be collapsed away"""
+    r = _ir(monkeypatch, tmp_path)
+    r._running = True
+
+    r._consume(_FakeSocket([[
+        "0002 00 KEY_VOLUMEDOWN toem_nec\n",
+        "0002 00 KEY_VOLUMEDOWN toem_nec\n",
+        "0002 00 KEY_VOLUMEDOWN toem_nec\n",
+    ]]))
+
+    actions = [c.args[0] for c in r.action_handler.handle_action.call_args_list]
+    assert actions == ["volume_down"] * 3
+
+
+def test_a_frame_split_across_reads_is_not_lost(monkeypatch, tmp_path):
+    """recv() boundaries fall anywhere, including mid-frame"""
+    r = _ir(monkeypatch, tmp_path)
+    r._running = True
+
+    r._consume(_FakeSocket(["0001 00 KEY_N", "EXT devinput\n"]))
+
+    actions = [c.args[0] for c in r.action_handler.handle_action.call_args_list]
+    assert actions == ["next_track"]

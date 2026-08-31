@@ -28,6 +28,15 @@ class PlayerActionHandler:
     # turns the next one into an immediate shutdown with no confirmation.
     SHUTDOWN_CONFIRM_TIMEOUT = 5
 
+    # ...and how soon a confirmation may arrive. The window above bounds only
+    # how *late* the second press can be; without a lower bound two events
+    # 23ms apart confirm each other, which is what a bouncing contact delivers
+    # for one physical press. Measured on toem2 over 66 shutdowns: gaps of 23,
+    # 63 and 71ms against a median of 972ms, and nothing human between 71 and
+    # 141ms. 150ms sits in that gap - above any bounce seen, below the fastest
+    # plausible deliberate double press.
+    MIN_CONFIRM_INTERVAL = 0.15
+
     def __init__(self, get_player, set_player, database_url, player_lock, reset_last_activity):
         self.get_player = get_player
         self.set_player = set_player
@@ -40,6 +49,7 @@ class PlayerActionHandler:
         self.consecutive_count = 0
         self.shutdown_lock = threading.Lock()
         self.confirm_timer = None
+        self.confirm_armed_at = None
 
         # Detected once: the control does not change while we run, and probing
         # on every keypress would add a subprocess to each one.
@@ -80,6 +90,7 @@ class PlayerActionHandler:
             if self.consecutive_count < 2:
                 logging.info(
                     "Shutdown button pressed once. Confirming shutdown.")
+                self.confirm_armed_at = time.monotonic()
                 utils.play_sound("confirm_shutdown")
 
                 # Cancelled on a second press and marked daemon, so a pending
@@ -93,10 +104,25 @@ class PlayerActionHandler:
                 self.confirm_timer.daemon = True
                 self.confirm_timer.start()
             else:
+                # Too soon to be a second press by a person, so it is the same
+                # press arriving twice - a bouncing contact, or lircd starting
+                # a fresh repeat count after a brief IR dropout. Ignore it and
+                # leave the confirmation armed, so the real second press still
+                # works.
+                since = (time.monotonic() - self.confirm_armed_at
+                         if self.confirm_armed_at is not None else None)
+                if since is not None and since < self.MIN_CONFIRM_INTERVAL:
+                    logging.info(
+                        "Ignoring a shutdown confirmation %.0fms after the "
+                        "first press; too fast to be a second press. Still "
+                        "armed.", since * 1000)
+                    return
+
                 logging.info("Shutdown confirmed. Shutting down.")
                 if self.confirm_timer:
                     self.confirm_timer.cancel()
                     self.confirm_timer = None
+                self.confirm_armed_at = None
                 with self.player_lock:
                     utils.shutdown(self.get_player())
                 self.consecutive_count = 0
@@ -107,6 +133,7 @@ class PlayerActionHandler:
         with self.shutdown_lock:
             logging.info("Shutdown confirmation expired without a second press.")
             self.confirm_timer = None
+            self.confirm_armed_at = None
             self.consecutive_count = 0
             self.last_action = None
 
@@ -289,6 +316,11 @@ class PlayerActionHandler:
 class GpioButtonHandler:
     """Handles GPIO button presses."""
 
+    # State changes ignored after an edge. Mechanical dome switches bounce for
+    # a few ms; 100ms outlasts that with margin and stays well below the
+    # fastest deliberate double press observed (141ms).
+    BUTTON_BOUNCE_TIME = 0.1
+
     def __init__(self, get_player, set_player, database_url, player_lock, reset_last_activity):
         if not Button:
             raise RuntimeError(
@@ -300,7 +332,11 @@ class GpioButtonHandler:
 
         self.buttons = []
         for pin, action in GPIO_ACTIONS.items():
-            button = Button(pin)
+            # gpiozero does not debounce by default, so a bouncing contact
+            # fires when_pressed more than once for a single physical press.
+            # On the shutdown button that reads as its own confirmation -
+            # measured on toem2 at 23ms - and the box goes down without asking.
+            button = Button(pin, bounce_time=self.BUTTON_BOUNCE_TIME)
             button.when_pressed = lambda a=action: self.action_handler.handle_action(
                 a)
             # Keep reference to avoid garbage collection:
@@ -340,7 +376,7 @@ class IrReceiver:
                 with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
                     sock.connect(self.socket_path)
                     logging.info("Listening for IR input...")
-                    self._consume(sock.makefile())
+                    self._consume(sock)
             except OSError as e:
                 logging.error("LIRC socket error: %s", e)
 
@@ -349,21 +385,27 @@ class IrReceiver:
                 # Event.wait rather than sleep so stop() is not left waiting.
                 self._stopping.wait(self.RECONNECT_DELAY)
 
-    def _consume(self, sock_file):
-        """Dispatch frames until the socket closes"""
-        while self._running:
-            line = sock_file.readline()
-            if not line:
-                # readline() returns "" immediately and forever once the peer
-                # has closed. Continuing here span the CPU at 100%.
-                logging.warning("LIRC closed the connection")
-                return
+    def _coalesce(self, lines):
+        """The actions a batch of frames is actually worth taking
 
-            # lircd sends "<code> <repeat> <key> <remote>", with repeat
-            # counting up while a key is held. Acting on every frame would
-            # skip a dozen tracks from one long press, so only the first
-            # counts - except volume, where holding to ramp is the point.
-            parts = line.strip().split()
+        lircd sends "<code> <repeat> <key> <remote>", with repeat counting up
+        while a key is held. Acting on every frame would skip a dozen tracks
+        from one long press, so only the first counts - except volume, where
+        holding to ramp is the point.
+
+        Repeats arrive every ~110ms and one volume step costs ~250ms of
+        amixer, so acting on each one cannot keep up: the surplus queues in
+        the socket and the volume goes on moving for seconds after the key is
+        released. Measured on toem 2026-08-31 - 45 frames consumed at a median
+        of 244ms against lircd's 110ms. So a run of repeats for the same
+        action collapses to a single action, and the ramp advances once per
+        batch instead of building a backlog.
+
+        A `00` frame is a distinct press and is never dropped.
+        """
+        actions = []
+        for line in lines:
+            parts = line.split()
             if len(parts) < 3:
                 continue
 
@@ -371,15 +413,44 @@ class IrReceiver:
             action = self.key_map.get(key)
             if not action:
                 continue
-            if repeat != "00" and action not in self.REPEATABLE_ACTIONS:
-                continue
+            if repeat != "00":
+                if action not in self.REPEATABLE_ACTIONS:
+                    continue
+                if actions and actions[-1][1] == action:
+                    continue  # same burst; one is already queued
+            actions.append((key, action))
+        return actions
 
-            logging.info("Received key: %s -> action: %s", key, action)
-            try:
-                self.action_handler.handle_action(action)
-            except Exception as e:
-                # One failing action must not end IR input for good.
-                logging.exception("Action %s failed: %s", action, e)
+    def _consume(self, sock):
+        """Dispatch frames until the socket closes
+
+        Reads the socket directly rather than through makefile(): a buffered
+        reader hides how many frames are already waiting, and that backlog is
+        exactly what _coalesce() exists to collapse. Each pass takes
+        everything that arrived while the previous batch was being handled.
+        """
+        buffer = b""
+        while self._running:
+            chunk = sock.recv(4096)
+            if not chunk:
+                # recv() returns b"" immediately and forever once the peer has
+                # closed. Continuing here spins the CPU at 100%.
+                logging.warning("LIRC closed the connection")
+                return
+
+            buffer += chunk
+            lines = buffer.split(b"\n")
+            # A trailing fragment is not a frame yet; hold it for the next read.
+            buffer = lines.pop()
+
+            for key, action in self._coalesce(
+                    line.decode(errors="replace").strip() for line in lines):
+                logging.info("Received key: %s -> action: %s", key, action)
+                try:
+                    self.action_handler.handle_action(action)
+                except Exception as e:
+                    # One failing action must not end IR input for good.
+                    logging.exception("Action %s failed: %s", action, e)
 
     def start(self):
         if not os.path.exists(self.socket_path):
