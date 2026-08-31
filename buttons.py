@@ -30,7 +30,7 @@ class PlayerActionHandler:
     # confirmation at all. A hold cannot be forged that way: contact bounce is
     # milliseconds and an IR dropout restarts the repeat count rather than
     # sustaining it. It is also the universal device idiom.
-    HOLD_TIME = 2.0
+    HOLD_TIME = 1.5
 
     # Actions a hold turns into something else. The plain press still fires
     # first, and for shutdown that press is deliberately silent.
