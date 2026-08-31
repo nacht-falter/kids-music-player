@@ -26,99 +26,33 @@ def handler():
             player_lock=threading.Lock(),
             reset_last_activity=MagicMock(),
         )
-    h.SHUTDOWN_CONFIRM_TIMEOUT = 0.05  # keep the tests quick
-    yield h
-    if h.confirm_timer:
-        h.confirm_timer.cancel()
+    return h
 
 
-def test_single_press_only_confirms(handler):
+def test_a_tap_only_acknowledges(handler):
+    """A tap says "this is the power button", it does not act"""
     with patch("buttons.utils") as mock_utils:
         handler.handle_action("shutdown")
         mock_utils.play_sound.assert_called_once_with("confirm_shutdown")
         mock_utils.shutdown.assert_not_called()
 
 
-def _press_again(handler, after=None):
-    """A second press far enough from the first to be a deliberate one
-
-    Rather than sleeping: rewind the arming timestamp, so the handler sees
-    the interval it would have seen in real time.
-    """
-    gap = handler.MIN_CONFIRM_INTERVAL + 0.05 if after is None else after
-    if handler.confirm_armed_at is not None:
-        handler.confirm_armed_at -= gap
-    handler.handle_action("shutdown")
-
-
-def test_second_press_shuts_down(handler):
+def test_a_hold_shuts_down(handler):
     with patch("buttons.utils") as mock_utils:
-        handler.handle_action("shutdown")
-        _press_again(handler)
+        handler.handle_action("shutdown_hold")
         mock_utils.shutdown.assert_called_once()
 
 
-def test_a_confirmation_too_fast_to_be_a_press_is_ignored(handler):
-    """One physical press delivered twice must not confirm itself
-
-    A bouncing contact fires when_pressed again within milliseconds, and
-    lircd restarts its repeat count after a brief IR dropout. Measured on
-    toem2: 23ms between arming and "confirmation", against a median of 972ms.
+def test_repeated_taps_never_shut_down(handler):
+    """The old gesture counted events, so one press arriving twice confirmed
+    itself - measured on toem2 at 23ms apart. A hold cannot be forged that
+    way, and no number of taps may substitute for one.
     """
     with patch("buttons.utils") as mock_utils:
-        handler.handle_action("shutdown")
-        handler.handle_action("shutdown")  # same instant - bounce
+        for _ in range(5):
+            handler.handle_action("shutdown")
         mock_utils.shutdown.assert_not_called()
 
-
-def test_the_arming_survives_a_bounce(handler):
-    """Ignoring the bounce must not disarm - the real press still has to work"""
-    with patch("buttons.utils") as mock_utils:
-        handler.handle_action("shutdown")
-        handler.handle_action("shutdown")  # bounce, ignored
-        mock_utils.shutdown.assert_not_called()
-
-        _press_again(handler)
-        mock_utils.shutdown.assert_called_once()
-        # Still one arming, so the confirmation sound did not play twice.
-        assert mock_utils.play_sound.call_count == 1
-
-
-def test_confirmation_expires(handler):
-    """An accidental press must not leave the device armed indefinitely"""
-    with patch("buttons.utils") as mock_utils:
-        handler.handle_action("shutdown")
-
-        # Wait out the confirmation window.
-        expired = threading.Event()
-        expired.wait(handler.SHUTDOWN_CONFIRM_TIMEOUT + 0.15)
-
-        handler.handle_action("shutdown")
-        # The second press re-confirms rather than shutting down.
-        mock_utils.shutdown.assert_not_called()
-        assert mock_utils.play_sound.call_count == 2
-
-
-def test_third_rapid_press_still_shuts_down(handler):
-    """`== 2` left a rapid triple-press matching neither branch"""
-    with patch("buttons.utils") as mock_utils:
-        handler.handle_action("shutdown")
-        _press_again(handler)
-        mock_utils.shutdown.reset_mock()
-
-        # Counter was cleared, so this starts a fresh confirmation.
-        handler.handle_action("shutdown")
-        mock_utils.shutdown.assert_not_called()
-        _press_again(handler)
-        mock_utils.shutdown.assert_called_once()
-
-
-def test_other_button_cancels_the_arming(handler):
-    with patch("buttons.utils") as mock_utils:
-        handler.handle_action("shutdown")
-        handler.handle_action("next_track")
-        _press_again(handler)
-        mock_utils.shutdown.assert_not_called()
 
 
 # --- recovering a player after the controller restarted ----------------------
@@ -419,8 +353,8 @@ def test_volume_down_at_zero_refuses():
 
 # --- buttons are track-level only ----------------------------------------
 
-class TestButtonsNeverChangeEpisode:
-    """Changing episode is a card re-scan now, not a double press
+class TestTapsNeverChangeEpisode:
+    """A tap moves a track. Only a hold or a card re-scan moves an episode
 
     The old gesture compared timestamps taken in handle_action, but the IR
     reader blocks on the Spotify call, so what it actually measured was the
@@ -466,29 +400,78 @@ class TestButtonsNeverChangeEpisode:
         player.previous_episode.assert_not_called()
 
 
+class _FakeButton:
+    """Records how gpiozero was configured, and lets a test fire the events"""
+    instances = []
+
+    def __init__(self, pin, bounce_time=None, hold_time=None, hold_repeat=None):
+        self.pin = pin
+        self.bounce_time = bounce_time
+        self.hold_time = hold_time
+        self.hold_repeat = hold_repeat
+        self.when_pressed = None
+        self.when_held = None
+        _FakeButton.instances.append(self)
+
+
+def _build_gpio_handler():
+    _FakeButton.instances = []
+    with patch("buttons.Button", _FakeButton), \
+            patch.object(buttons.PlayerActionHandler, "_detect_mixer_control",
+                         return_value=None):
+        handler = buttons.GpioButtonHandler(
+            lambda: None, lambda _p: None, "db", threading.Lock(), lambda: None)
+    return handler, list(_FakeButton.instances)
+
+
 def test_gpio_buttons_are_debounced():
     """gpiozero does not debounce by default, and the default is what bit us
 
-    Without bounce_time a single physical press fires when_pressed more than
-    once, which the shutdown handler reads as its own confirmation.
+    Without bounce_time one physical press fires when_pressed more than once -
+    measured on toem2 at 23ms apart - which the old shutdown gesture read as
+    its own confirmation and shut the box down with no confirmation at all.
     """
-    created = []
-
-    class FakeButton:
-        def __init__(self, pin, bounce_time=None):
-            created.append((pin, bounce_time))
-            self.when_pressed = None
-
-    with patch("buttons.Button", FakeButton), \
-            patch.object(buttons.PlayerActionHandler, "_detect_mixer_control",
-                         return_value=None):
-        buttons.GpioButtonHandler(
-            lambda: None, lambda _p: None, "db", threading.Lock(), lambda: None)
-
+    _, created = _build_gpio_handler()
     assert created, "no buttons were created"
-    for pin, bounce_time in created:
-        assert bounce_time == buttons.GpioButtonHandler.BUTTON_BOUNCE_TIME, (
-            "pin %s was created without debouncing" % pin)
+    for b in created:
+        assert b.bounce_time == buttons.GpioButtonHandler.BUTTON_BOUNCE_TIME, (
+            "pin %s was created without debouncing" % b.pin)
+
+
+def test_only_buttons_with_a_hold_action_are_wired_for_hold():
+    """hold_repeat must be False: one hold is one action, not one per second
+
+    Verified against the real button on toem2 2026-08-31 - a 178ms tap fired
+    when_pressed only, a hold fired when_held once at exactly 1.001s.
+    """
+    _, created = _build_gpio_handler()
+    by_pin = {b.pin: b for b in created}
+
+    for pin, action in buttons.GPIO_ACTIONS.items():
+        button = by_pin[pin]
+        if action in buttons.PlayerActionHandler.HOLD_ACTIONS:
+            assert button.when_held is not None, (
+                "%s has a hold action but no when_held" % action)
+            assert button.hold_time == buttons.PlayerActionHandler.HOLD_TIME
+            assert button.hold_repeat is False, "a hold must fire once"
+        else:
+            assert button.when_held is None, (
+                "%s has no hold action but was wired for hold" % action)
+
+
+def test_holding_a_gpio_button_fires_press_then_hold():
+    """The tap still fires - for shutdown that is the acknowledging sound"""
+    handler, created = _build_gpio_handler()
+    handler.action_handler.handle_action = MagicMock()
+    pin = [p for p, a in buttons.GPIO_ACTIONS.items() if a == "shutdown"][0]
+    button = [b for b in created if b.pin == pin][0]
+
+    button.when_pressed()
+    button.when_held()
+
+    assert [c.args[0] for c in
+            handler.action_handler.handle_action.call_args_list] == [
+        "shutdown", "shutdown_hold"]
 
 
 def test_a_backlog_of_repeats_collapses_to_one_step(monkeypatch, tmp_path):
@@ -552,3 +535,117 @@ def test_a_frame_split_across_reads_is_not_lost(monkeypatch, tmp_path):
 
     actions = [c.args[0] for c in r.action_handler.handle_action.call_args_list]
     assert actions == ["next_track"]
+
+
+# --- holding next/previous: a whole episode -------------------------------
+
+def _series(playing=True):
+    player = MagicMock()
+    player.is_series = True
+    return player
+
+
+def _album():
+    player = MagicMock()
+    player.is_series = False
+    return player
+
+
+def test_holding_next_advances_an_episode(handler):
+    player = _series()
+    handler.get_player = MagicMock(return_value=player)
+    with patch("buttons.utils"):
+        handler.handle_action("next_episode")
+    player.next_episode.assert_called_once()
+    player.next_track.assert_not_called()
+
+
+def test_holding_previous_goes_back_an_episode(handler):
+    """The only way back. Re-scanning the card advances but never reverses,
+    so previous_episode() was implemented and reachable from nothing.
+    """
+    player = _series()
+    handler.get_player = MagicMock(return_value=player)
+    with patch("buttons.utils"):
+        handler.handle_action("previous_episode")
+    player.previous_episode.assert_called_once()
+    player.previous_track.assert_not_called()
+
+
+def test_holding_on_an_album_declines_without_an_error(handler):
+    """An album has no episodes. The child pressed a real button correctly,
+    so this is not an error - and restarting the album instead would throw
+    away their place in a twenty-minute Hoerspiel.
+    """
+    player = _album()
+    handler.get_player = MagicMock(return_value=player)
+    with patch("buttons.utils") as mock_utils:
+        handler.handle_action("next_episode")
+        handler.handle_action("previous_episode")
+
+    player.next_episode.assert_not_called()
+    player.previous_episode.assert_not_called()
+    player.next_track.assert_not_called()
+    player.restart_playback.assert_not_called()
+    assert [c.args[0] for c in mock_utils.play_sound.call_args_list] == [
+        "nothing_here", "nothing_here"]
+
+
+def test_holding_with_no_player_is_an_error(handler):
+    handler.get_player = MagicMock(return_value=None)
+    with patch("buttons.utils") as mock_utils:
+        handler.handle_action("next_episode")
+    mock_utils.play_sound.assert_called_once_with("error")
+
+
+# --- holding an IR key: the repeat counter is the clock -------------------
+
+def _ir_hold_frames(key, count):
+    """A press followed by *count* repeats, as lircd emits them"""
+    return ["0002 %02x %s toem_nec\n" % (n, key) for n in range(count + 1)]
+
+
+def test_a_held_ir_key_fires_the_hold_action_once(monkeypatch, tmp_path):
+    """Counting frames, not elapsed time: the remote sets the cadence, so a
+    slow handler cannot stretch it. Item 24's double press measured elapsed
+    time and ended up measuring the Spotify round-trip instead.
+    """
+    r = _ir(monkeypatch, tmp_path)
+    r._running = True
+    r._consume(_FakeSocket([_ir_hold_frames("KEY_POWER", 30)]))
+
+    actions = [c.args[0] for c in r.action_handler.handle_action.call_args_list]
+    assert actions == ["shutdown", "shutdown_hold"], (
+        "31 frames should be one tap and one hold, got %r" % (actions,))
+
+
+def test_a_brief_ir_press_does_not_reach_the_hold(monkeypatch, tmp_path):
+    r = _ir(monkeypatch, tmp_path)
+    r._running = True
+    r._consume(_FakeSocket([_ir_hold_frames("KEY_POWER", 2)]))
+
+    actions = [c.args[0] for c in r.action_handler.handle_action.call_args_list]
+    assert actions == ["shutdown"]
+
+
+def test_a_second_ir_hold_fires_again(monkeypatch, tmp_path):
+    """A fresh 00 frame rearms, so two holds are two actions"""
+    r = _ir(monkeypatch, tmp_path)
+    r._running = True
+    r._consume(_FakeSocket([_ir_hold_frames("KEY_NEXT", 30),
+                            _ir_hold_frames("KEY_NEXT", 30)]))
+
+    actions = [c.args[0] for c in r.action_handler.handle_action.call_args_list]
+    assert actions == ["next_track", "next_episode",
+                       "next_track", "next_episode"]
+
+
+def test_an_ir_hold_split_across_batches_still_fires_once(monkeypatch, tmp_path):
+    """A burst spans recv() boundaries; the hold must not fire per batch"""
+    r = _ir(monkeypatch, tmp_path)
+    r._running = True
+    frames = _ir_hold_frames("KEY_VOLUMEDOWN", 0) + _ir_hold_frames("KEY_NEXT", 30)
+    r._consume(_FakeSocket([frames[:5], frames[5:20], frames[20:]]))
+
+    actions = [c.args[0] for c in r.action_handler.handle_action.call_args_list]
+    assert actions.count("next_episode") == 1, actions

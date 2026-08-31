@@ -23,19 +23,34 @@ except ImportError:
 class PlayerActionHandler:
     """Handles player-related actions that can be triggered by different input methods."""
 
-    # How long a shutdown confirmation stays armed. Without a timeout the first
-    # press arms the device indefinitely, so an accidental press hours earlier
-    # turns the next one into an immediate shutdown with no confirmation.
-    SHUTDOWN_CONFIRM_TIMEOUT = 5
+    # How long the shutdown button must be held. This replaces the old
+    # double-press confirmation, which counted events and so could not tell a
+    # deliberate second press from the same press arriving twice - measured on
+    # toem2 at 23ms apart, one physical press shutting the box down with no
+    # confirmation at all. A hold cannot be forged that way: contact bounce is
+    # milliseconds and an IR dropout restarts the repeat count rather than
+    # sustaining it. It is also the universal device idiom.
+    HOLD_TIME = 1.0
 
-    # ...and how soon a confirmation may arrive. The window above bounds only
-    # how *late* the second press can be; without a lower bound two events
-    # 23ms apart confirm each other, which is what a bouncing contact delivers
-    # for one physical press. Measured on toem2 over 66 shutdowns: gaps of 23,
-    # 63 and 71ms against a median of 972ms, and nothing human between 71 and
-    # 141ms. 150ms sits in that gap - above any bounce seen, below the fastest
-    # plausible deliberate double press.
-    MIN_CONFIRM_INTERVAL = 0.15
+    # Actions a hold turns into something else. The plain press still fires
+    # first - for shutdown that is the acknowledging sound, so a tap says
+    # "this is the power button, keep holding" instead of doing nothing.
+    #
+    # The rule the child learns is one rule: a hold jumps further than a tap.
+    # Tap next/previous moves a track, holding it moves a whole episode. That
+    # is also the only way back through a series - re-scanning the card
+    # advances an episode but has no reverse, so previous_episode() has been
+    # implemented and unreachable.
+    #
+    # No device convention was copied here because none exists: press-and-hold
+    # is fast-forward on some players and "skip to start of track" on others,
+    # and the two closest boxes - Toniebox and Yoto - give seeking a separate
+    # gesture (a tilt, a knob) rather than a duration. Checked 2026-08-31.
+    HOLD_ACTIONS = {
+        "shutdown": "shutdown_hold",
+        "next_track": "next_episode",
+        "previous_track": "previous_episode",
+    }
 
     def __init__(self, get_player, set_player, database_url, player_lock, reset_last_activity):
         self.get_player = get_player
@@ -44,12 +59,9 @@ class PlayerActionHandler:
         self.player_lock = player_lock
         self.reset_last_activity = reset_last_activity
 
-        # For shutdown confirmation and consecutive actions
-        self.last_action = None
-        self.consecutive_count = 0
+        # Serialises the shutdown itself; there is no confirmation state to
+        # guard any more.
         self.shutdown_lock = threading.Lock()
-        self.confirm_timer = None
-        self.confirm_armed_at = None
 
         # Detected once: the control does not change while we run, and probing
         # on every keypress would add a subprocess to each one.
@@ -59,10 +71,13 @@ class PlayerActionHandler:
 
         # Map action names to handler methods
         self.action_map = {
-            "shutdown": self._handle_shutdown,
+            "shutdown": self._handle_shutdown_pressed,
+            "shutdown_hold": self._handle_shutdown_confirmed,
             "toggle_playback": self._handle_toggle_playback,
             "next_track": self._handle_next_track,
             "previous_track": self._handle_previous_track,
+            "next_episode": self._handle_next_episode,
+            "previous_episode": self._handle_previous_episode,
             "volume_up": self._handle_volume_up,
             "volume_down": self._handle_volume_down,
         }
@@ -70,72 +85,26 @@ class PlayerActionHandler:
     def handle_action(self, action):
         self.reset_last_activity()
 
-        if self.last_action == action:
-            self.consecutive_count += 1
-        else:
-            self.last_action = action
-            self.consecutive_count = 1
-
         handler = self.action_map.get(action)
         if handler:
             handler()
         else:
             logging.warning(f"Unknown action: {action}")
 
-    def _handle_shutdown(self):
+    def _handle_shutdown_pressed(self):
+        """A tap on the power button: acknowledge it and do nothing else"""
+        logging.info("Shutdown button pressed. Hold to shut down.")
+        utils.play_sound("confirm_shutdown")
+
+    def _handle_shutdown_confirmed(self):
+        """The button was held long enough to mean it"""
         # shutdown_lock is taken before player_lock here, and nothing takes
         # them the other way round - the remaining handlers only take
         # player_lock. Keep it that way.
         with self.shutdown_lock:
-            if self.consecutive_count < 2:
-                logging.info(
-                    "Shutdown button pressed once. Confirming shutdown.")
-                self.confirm_armed_at = time.monotonic()
-                utils.play_sound("confirm_shutdown")
-
-                # Cancelled on a second press and marked daemon, so a pending
-                # timer neither fires against a stale state nor holds the
-                # process open for its duration at exit.
-                if self.confirm_timer:
-                    self.confirm_timer.cancel()
-                self.confirm_timer = threading.Timer(
-                    self.SHUTDOWN_CONFIRM_TIMEOUT,
-                    self._reset_shutdown_confirmation)
-                self.confirm_timer.daemon = True
-                self.confirm_timer.start()
-            else:
-                # Too soon to be a second press by a person, so it is the same
-                # press arriving twice - a bouncing contact, or lircd starting
-                # a fresh repeat count after a brief IR dropout. Ignore it and
-                # leave the confirmation armed, so the real second press still
-                # works.
-                since = (time.monotonic() - self.confirm_armed_at
-                         if self.confirm_armed_at is not None else None)
-                if since is not None and since < self.MIN_CONFIRM_INTERVAL:
-                    logging.info(
-                        "Ignoring a shutdown confirmation %.0fms after the "
-                        "first press; too fast to be a second press. Still "
-                        "armed.", since * 1000)
-                    return
-
-                logging.info("Shutdown confirmed. Shutting down.")
-                if self.confirm_timer:
-                    self.confirm_timer.cancel()
-                    self.confirm_timer = None
-                self.confirm_armed_at = None
-                with self.player_lock:
-                    utils.shutdown(self.get_player())
-                self.consecutive_count = 0
-                self.last_action = None
-
-    def _reset_shutdown_confirmation(self):
-        """Disarm the confirmation. Called from the timer thread."""
-        with self.shutdown_lock:
-            logging.info("Shutdown confirmation expired without a second press.")
-            self.confirm_timer = None
-            self.confirm_armed_at = None
-            self.consecutive_count = 0
-            self.last_action = None
+            logging.info("Shutdown button held. Shutting down.")
+            with self.player_lock:
+                utils.shutdown(self.get_player())
 
     def _handle_toggle_playback(self):
         with self.player_lock:
@@ -267,6 +236,43 @@ class PlayerActionHandler:
             logging.error("Could not set the volume: %s", e)
             utils.play_sound("error")
 
+    def _handle_episode(self, step, label):
+        """Move a whole episode, or decline politely if there is nowhere to go
+
+        A card that is a plain album has no episodes. Declining with a neutral
+        tone rather than the error sound is deliberate: the child pressed a
+        real button in a legitimate way and there is simply nothing there, so
+        "you did something wrong" would be both untrue and discouraging.
+
+        Restarting the album instead - what re-scanning the card does - was
+        considered and rejected: on six of the nine album cards on toem2 that
+        would throw away a child's place in a twenty-minute Hörspiel, and the
+        card already offers that gesture for anyone who wants it.
+        """
+        with self.player_lock:
+            player = self.get_player()
+            if not player:
+                logging.warning("Player is not initialized. Cannot change episode.")
+                utils.play_sound("error")
+                return
+            if not getattr(player, "is_series", False):
+                logging.info("Not a series; %s does nothing here.", label)
+                utils.play_sound("nothing_here")
+                return
+
+            logging.info("%s action triggered.", label.capitalize())
+            utils.play_sound("next_track" if step > 0 else "previous_track")
+            if step > 0:
+                player.next_episode()
+            else:
+                player.previous_episode()
+
+    def _handle_next_episode(self):
+        self._handle_episode(+1, "next episode")
+
+    def _handle_previous_episode(self):
+        self._handle_episode(-1, "previous episode")
+
     def _handle_volume_up(self):
         utils.play_sound("volume_up")
         self._set_volume(+self.VOLUME_STEP)
@@ -336,9 +342,23 @@ class GpioButtonHandler:
             # fires when_pressed more than once for a single physical press.
             # On the shutdown button that reads as its own confirmation -
             # measured on toem2 at 23ms - and the box goes down without asking.
-            button = Button(pin, bounce_time=self.BUTTON_BOUNCE_TIME)
+            button = Button(pin, bounce_time=self.BUTTON_BOUNCE_TIME,
+                            hold_time=PlayerActionHandler.HOLD_TIME,
+                            hold_repeat=False)
             button.when_pressed = lambda a=action: self.action_handler.handle_action(
                 a)
+
+            # hold_repeat=False, so this fires once per hold rather than
+            # every hold_time. Verified on toem2's own button 2026-08-31: a
+            # 178ms tap fired when_pressed only, a hold fired when_held once
+            # at exactly 1.001s. gpiozero 1.6.2 does the timing in its own
+            # thread, so a slow handler cannot distort it - which is what
+            # sank the double-press gesture in item 24.
+            hold = PlayerActionHandler.HOLD_ACTIONS.get(action)
+            if hold:
+                button.when_held = lambda h=hold: self.action_handler.handle_action(
+                    h)
+
             # Keep reference to avoid garbage collection:
             self.buttons.append(button)
 
@@ -348,6 +368,13 @@ class IrReceiver:
 
     # Actions where holding the key should keep firing.
     REPEATABLE_ACTIONS = {"volume_up", "volume_down"}
+
+    # lircd emits a repeat about every 110ms while a key is held, so this many
+    # of them is roughly PlayerActionHandler.HOLD_TIME. Counting frames rather
+    # than measuring elapsed time is deliberate: the remote sets the cadence,
+    # so a slow handler cannot stretch it. Item 24's double press measured
+    # elapsed time and ended up measuring the Spotify round-trip instead.
+    IR_REPEAT_INTERVAL = 0.11
 
     def __init__(self, get_player, set_player, database_url, player_lock, reset_last_activity, socket_path='/var/run/lirc/lircd'):
         self.socket_path = socket_path
@@ -360,6 +387,11 @@ class IrReceiver:
         )
 
         self.key_map = IR_ACTIONS
+
+        # Actions whose hold has already fired, so one hold produces one
+        # action however long it is held. Cleared by the next 00 frame, which
+        # is a fresh press.
+        self._held = set()
 
     # How long to wait before reconnecting after the socket drops.
     RECONNECT_DELAY = 5
@@ -403,6 +435,9 @@ class IrReceiver:
 
         A `00` frame is a distinct press and is never dropped.
         """
+        hold_after = max(
+            1, round(PlayerActionHandler.HOLD_TIME / self.IR_REPEAT_INTERVAL))
+
         actions = []
         for line in lines:
             parts = line.split()
@@ -413,11 +448,28 @@ class IrReceiver:
             action = self.key_map.get(key)
             if not action:
                 continue
-            if repeat != "00":
-                if action not in self.REPEATABLE_ACTIONS:
-                    continue
-                if actions and actions[-1][1] == action:
-                    continue  # same burst; one is already queued
+            try:
+                count = int(repeat, 16)
+            except ValueError:
+                continue
+
+            if count == 0:            # a fresh press
+                self._held.discard(action)
+                actions.append((key, action))
+                continue
+
+            hold = PlayerActionHandler.HOLD_ACTIONS.get(action)
+            if hold:
+                # Held long enough, and not already fired for this burst.
+                if action not in self._held and count >= hold_after:
+                    self._held.add(action)
+                    actions.append((key, hold))
+                continue
+
+            if action not in self.REPEATABLE_ACTIONS:
+                continue
+            if actions and actions[-1][1] == action:
+                continue  # same burst; one is already queued
             actions.append((key, action))
         return actions
 

@@ -260,6 +260,9 @@ def play_sound(event, blocking=False):
         "volume_up": "volup",
         "volume_down": "voldown",
         "confirm_shutdown": "confirm_shutdown",
+        # Held a button where the gesture has nowhere to go - a plain album
+        # has no episodes. Neutral on purpose: not an error, just nothing.
+        "nothing_here": "low_beep",
         "shutdown": "shutdown",
         "playback_error": "playback_error"
     }
