@@ -259,7 +259,6 @@ def play_sound(event, blocking=False):
         # for these. Files were already in sounds/ from the bash version.
         "volume_up": "volup",
         "volume_down": "voldown",
-        "confirm_shutdown": "confirm_shutdown",
         # Held a button where the gesture has nowhere to go - a plain album
         # has no episodes. Neutral on purpose: not an error, just nothing.
         "nothing_here": "low_beep",

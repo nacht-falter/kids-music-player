@@ -29,11 +29,11 @@ def handler():
     return h
 
 
-def test_a_tap_only_acknowledges(handler):
-    """A tap says "this is the power button", it does not act"""
+def test_a_tap_does_nothing_and_is_silent(handler):
+    """The prompt sound belonged to the double press; a hold needs no prompt"""
     with patch("buttons.utils") as mock_utils:
         handler.handle_action("shutdown")
-        mock_utils.play_sound.assert_called_once_with("confirm_shutdown")
+        mock_utils.play_sound.assert_not_called()
         mock_utils.shutdown.assert_not_called()
 
 

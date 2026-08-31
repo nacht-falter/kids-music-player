@@ -33,8 +33,7 @@ class PlayerActionHandler:
     HOLD_TIME = 1.0
 
     # Actions a hold turns into something else. The plain press still fires
-    # first - for shutdown that is the acknowledging sound, so a tap says
-    # "this is the power button, keep holding" instead of doing nothing.
+    # first, and for shutdown that press is deliberately silent.
     #
     # The rule the child learns is one rule: a hold jumps further than a tap.
     # Tap next/previous moves a track, holding it moves a whole episode. That
@@ -92,9 +91,14 @@ class PlayerActionHandler:
             logging.warning(f"Unknown action: {action}")
 
     def _handle_shutdown_pressed(self):
-        """A tap on the power button: acknowledge it and do nothing else"""
+        """A tap on the power button does nothing but say so in the log
+
+        Silent on purpose. The sound here used to be the confirmation prompt
+        for the double-press gesture; with a hold there is nothing to prompt
+        for, and the shutdown sound already plays when the gesture actually
+        fires.
+        """
         logging.info("Shutdown button pressed. Hold to shut down.")
-        utils.play_sound("confirm_shutdown")
 
     def _handle_shutdown_confirmed(self):
         """The button was held long enough to mean it"""
