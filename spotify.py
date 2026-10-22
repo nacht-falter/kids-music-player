@@ -499,14 +499,14 @@ class SpotifyPlayer:
     def _state_from_playback(self, playback):
         """Cheap position snapshot taken from a playback payload
 
-        Unlike save_playback_state() this never resolves playlist positions,
-        which would cost an extra API call every time it runs. For playlist
-        contexts the last known offset is kept and only the elapsed time is
-        updated; save_playback_state() resolves those properly.
+        Used to resolve a numeric playlist/album index here, which needed
+        another request and so was skipped on every tick - the frozen index
+        that resulted is what jumped a reclaim back to an old track, however
+        much progress had been made since. A track URI needs no resolving:
+        item["uri"] is already in the payload this reads, at no extra cost,
+        for playlists and albums alike. See play(), which prefers it.
         """
         item = playback.get("item") or {}
-        context_uri = (playback.get("context") or {}).get("uri")
-        context_parts = context_uri.split(":") if context_uri else []
 
         position_ms = playback.get("progress_ms", 0)
         reason = self._position_rejection_reason(playback, position_ms, item)
@@ -521,19 +521,8 @@ class SpotifyPlayer:
 
         self._note_good_position(playback, position_ms)
 
-        if (len(context_parts) == 3 and context_parts[1] == "album"
-                and (item.get("disc_number") or 1) <= 1):
-            offset_position = max(0, item.get("track_number", 1) - 1)
-        else:
-            # Playlists and multi-disc albums cannot be resolved without
-            # another request, which is not worth making on every tick. Keep
-            # the last known offset; save_playback_state() resolves it
-            # properly.
-            offset_position = (
-                self.playback_state.get("offset") or {}).get("position", 0)
-
         return {
-            "offset": {"position": offset_position},
+            "offset": {"uri": item.get("uri")},
             "position_ms": position_ms,
         }
 
@@ -597,12 +586,22 @@ class SpotifyPlayer:
 
     def play(self):
         url = self._device_url("play")
-        position = (self.playback_state.get("offset") or {}).get("position", 0)
+        offset = self.playback_state.get("offset") or {}
         position_ms = self.playback_state.get("position_ms", 0)
+
+        # Seek by the track's own URI when we have one - it needs no
+        # resolving, unlike a numeric index (see _state_from_playback).
+        # "position" is kept as a fallback so a state saved before this
+        # existed still plays; a URI beats a position whenever both are
+        # present, since it is the one that cannot go stale.
+        if offset.get("uri"):
+            offset_sent = {"uri": offset["uri"]}
+        else:
+            offset_sent = {"position": offset.get("position", 0)}
 
         data = {
             "context_uri": self._context_uri(),
-            "offset": {"position": position},
+            "offset": offset_sent,
             "position_ms": position_ms,
         }
 
@@ -615,7 +614,8 @@ class SpotifyPlayer:
             self.active_device = self.device_id
             self._note_intended_position(position_ms)
             logging.info(
-                "Started playback from beginning at position %d (%d ms)", position, position_ms)
+                "Started playback from beginning at offset %s (%d ms)",
+                offset_sent, position_ms)
         except requests.RequestException as e:
             self.handle_exception("Playback failed", e, audible=True)
 
@@ -775,6 +775,17 @@ class SpotifyPlayer:
             return False
 
     def save_playback_state(self):
+        """Write where the story has got to, resolving it if we own playback
+
+        Position resolution used to mean paging through the playlist or album
+        to find the current track's numeric index - the whole reason this was
+        a separate, expensive alternative to _state_from_playback(), only run
+        on a card switch or shutdown. A track URI needs none of that, so this
+        is now the same snapshot _state_from_playback() already takes; kept
+        as its own method because the "not ours" fallback and the log line
+        below belong here, at the point where the session is being closed
+        out, not on every tick.
+        """
         playback = self.check_playback_status()
 
         # /me/player reports whatever the account is playing, on any device, so
@@ -789,114 +800,8 @@ class SpotifyPlayer:
                 "RFID %s", self.rfid)
             return self._persist_state(self.playback_state)
 
-        position_ms = playback.get("progress_ms", 0)
-        item = playback.get("item") or {}
-        context_uri = (playback.get("context") or {}).get("uri")
-        track_uri = item.get("uri")
-        offset_position = 0  # fallback default
-
-        reason = self._position_rejection_reason(playback, position_ms, item)
-        if reason:
-            # As in _state_from_playback: a clock jump makes the live reading
-            # worthless, and the last position we recorded is better than one
-            # that cannot be real. Resolving the offset below would also be
-            # wasted API calls.
-            logging.warning(
-                "%s playback position for RFID %s; keeping the last known "
-                "position: %s", reason.capitalize(), self.rfid,
-                self._position_diagnostics(playback, position_ms))
-            return self._persist_state(self.playback_state)
-
-        self._note_good_position(playback, position_ms)
-
-        if not context_uri or not track_uri:
-            logging.warning(
-                "Missing context or track URI; can't determine position")
-        else:
-            try:
-                context_parts = context_uri.split(":")
-                if len(context_parts) == 3 and context_parts[1] == "playlist":
-                    offset_position = self._get_track_position_in_playlist(
-                        context_parts[2], track_uri)
-                elif len(context_parts) == 3 and context_parts[1] == "album":
-                    offset_position = self._album_offset(
-                        context_parts[2], item, track_uri)
-                else:
-                    logging.warning(
-                        "Unsupported context type: %s", context_uri)
-            except Exception as e:
-                self.handle_exception("Failed to resolve track position", e)
-
-        self.playback_state = {
-            "offset": {"position": offset_position},
-            "position_ms": position_ms,
-        }
-
+        self.playback_state = self._state_from_playback(playback)
         return self._persist_state(self.playback_state)
-
-    # /albums/{id}/tracks rejects anything above 50 with "Invalid limit", while
-    # /playlists/{id}/tracks allows 100. Using the lower bound for both keeps
-    # one code path; the extra request on long playlists is irrelevant here,
-    # since this only runs on a card switch or shutdown.
-    PAGE_LIMIT = 50
-
-    def _find_track_index(self, url, track_uri, uri_of):
-        """Absolute index of track_uri within a paginated context listing"""
-        headers = self._get_headers()
-        params = {"limit": self.PAGE_LIMIT, "offset": 0}
-
-        while True:
-            response = requests.get(url, headers=headers, params=params)
-            response.raise_for_status()
-            page = response.json()
-
-            for index, entry in enumerate(page.get("items", [])):
-                if uri_of(entry) == track_uri:
-                    # Offset of the page plus position within it. Returning the
-                    # bare index put every match beyond the first page up to
-                    # 100 tracks too early.
-                    return params["offset"] + index
-
-            if not page.get("next"):
-                return None
-            params["offset"] += params["limit"]
-
-    def _get_track_position_in_playlist(self, playlist_id, track_uri):
-        index = self._find_track_index(
-            f"{self.base_url}/playlists/{playlist_id}/tracks",
-            track_uri,
-            lambda entry: (entry.get("track") or {}).get("uri"))
-        if index is None:
-            logging.warning("Track URI not found in playlist")
-            return 0  # fallback
-        return index
-
-    def _get_track_position_in_album(self, album_id, track_uri):
-        index = self._find_track_index(
-            f"{self.base_url}/albums/{album_id}/tracks",
-            track_uri,
-            lambda entry: entry.get("uri"))
-        if index is None:
-            logging.warning("Track URI not found in album")
-            return 0  # fallback
-        return index
-
-    def _album_offset(self, album_id, item, track_uri):
-        """Index of the current track within an album context
-
-        track_number restarts at 1 on each disc, so on a multi-disc album it is
-        not the offset into the context - a track on disc 2 would resume near
-        the start of disc 1. Single-disc albums, which is all of ours today,
-        keep the free path and make no extra request.
-        """
-        disc_number = item.get("disc_number") or 1
-        if disc_number <= 1:
-            return max(0, item.get("track_number", 1) - 1)
-
-        logging.debug(
-            "Multi-disc album (disc %d); resolving offset from the track list",
-            disc_number)
-        return self._get_track_position_in_album(album_id, track_uri)
 
     def handle_exception(self, message, e, audible=False):
         """Log a failure, and optionally tell whoever is standing there
@@ -941,6 +846,10 @@ class SpotifySeriesPlayer(SpotifyPlayer):
     # finished. The position is only sampled every STATE_REFRESH_INTERVAL
     # seconds, so the last sample before the end can be well short of it.
     FINISHED_TOLERANCE_MS = 45000
+
+    # /playlists/{id}/tracks pages at up to 100; used well under that so the
+    # page size was never a limit worth raising, only a limit worth naming.
+    PAGE_LIMIT = 50
 
     def __init__(self, rfid, playback_state, location):
         super().__init__(rfid, playback_state, location)

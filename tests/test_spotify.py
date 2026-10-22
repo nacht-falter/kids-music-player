@@ -346,12 +346,18 @@ def test_get_auth_manager_singleton(monkeypatch):
         auth2 = get_auth_manager()
         assert auth1 is auth2 
 def test_spotify_player_tracks_position_while_playing(monkeypatch):
-    """Observing our own playback updates the in-memory position"""
+    """Observing our own playback updates the in-memory position
+
+    The offset must move to the track actually playing, not stay pinned to
+    whatever was current when the state was loaded - a stale index paired
+    with a fresh elapsed time is exactly what jumped a reclaim back to an
+    old track after enough skips (see save_playback_state/_state_from_playback).
+    """
     monkeypatch.setenv("SPOTIFY_DEVICE_ID", "test_device")
 
     with patch.dict('sys.modules', {'utils': MagicMock()}):
         from spotify import SpotifyPlayer
-        stale = '{"offset": {"position": 1}, "position_ms": 48360}'
+        stale = '{"offset": {"uri": "spotify:track:old"}, "position_ms": 48360}'
         player = SpotifyPlayer("rfid123", stale, "spotify:album:123")
 
         status = _playback_status("test_device", "spotify:album:123")
@@ -363,7 +369,7 @@ def test_spotify_player_tracks_position_while_playing(monkeypatch):
             player.check_playback_status()
 
         assert player.playback_state == {
-            "offset": {"position": 1}, "position_ms": 90000}
+            "offset": {"uri": "spotify:track:x"}, "position_ms": 90000}
 
 def test_spotify_player_reclaim_uses_fresh_position(monkeypatch):
     """A reclaim must not rewind to the position stored at card scan"""
@@ -394,6 +400,71 @@ def test_spotify_player_reclaim_uses_fresh_position(monkeypatch):
         assert sent["context_uri"] == "spotify:album:123"
         # 90000, not the 48360 it was constructed with.
         assert sent["position_ms"] == 90000
+
+def test_reclaim_on_a_playlist_follows_the_real_track_not_a_frozen_one(monkeypatch):
+    """The bug: offset.position never advanced for playlist contexts, so a
+    reclaim after several skips restarted an old track - observed live on
+    toem, "position 46" replayed unchanged across four reclaims spanning two
+    hours while dozens of skips moved through completely different songs.
+
+    save_playback_state()/_state_from_playback() used to resolve a numeric
+    index, which cost an extra API call for a playlist and so was skipped on
+    every ordinary tick; the index froze at whatever it last was, while
+    position_ms kept being refreshed against a track that index no longer
+    named. Tracking the URI instead removes the asymmetry: it is free on
+    every tick, for a playlist exactly as for an album.
+    """
+    monkeypatch.setenv("SPOTIFY_DEVICE_ID", "test_device")
+
+    with patch.dict('sys.modules', {'utils': MagicMock()}):
+        from spotify import SpotifyPlayer
+        stale = '{"offset": {"uri": "spotify:track:first"}, "position_ms": 0}'
+        player = SpotifyPlayer("rfid123", stale, "spotify:playlist:abc")
+
+        # Several ticks land on different tracks, as ordinary skipping
+        # through a long playlist does.
+        for uri, progress in [("spotify:track:second", 12000),
+                              ("spotify:track:third", 45000),
+                              ("spotify:track:fourth", 8000)]:
+            status = _playback_status("test_device", "spotify:playlist:abc")
+            status.json.return_value["progress_ms"] = progress
+            status.json.return_value["item"] = {"uri": uri}
+            with patch.object(player.auth_manager, "get_token", return_value="tok"), \
+                    patch('spotify.requests.get', return_value=status):
+                player.refresh_playback_state()
+
+        # Something interrupts us - a dropped connection, a takeover - and a
+        # button press has to reclaim.
+        foreign = _playback_status("phone", None)
+        with patch.object(player.auth_manager, "get_token", return_value="tok"), \
+                patch('spotify.requests.get', return_value=foreign), \
+                patch('spotify.requests.put') as mock_put:
+            player.toggle_playback()
+
+        sent = mock_put.call_args.kwargs["json"]
+        # The fourth track, not the first - and never a numeric position,
+        # which is what would have meant the index had gone stale again.
+        assert sent["offset"] == {"uri": "spotify:track:fourth"}
+        assert sent["position_ms"] == 8000
+
+
+def test_play_falls_back_to_a_position_when_no_uri_was_saved(monkeypatch):
+    """A row saved before this fix has no URI - it must still play"""
+    monkeypatch.setenv("SPOTIFY_DEVICE_ID", "test_device")
+
+    with patch.dict('sys.modules', {'utils': MagicMock()}):
+        from spotify import SpotifyPlayer
+        old_format = '{"offset": {"position": 4}, "position_ms": 30000}'
+        player = SpotifyPlayer("rfid123", old_format, "spotify:album:123")
+
+        with patch.object(player.auth_manager, "get_token", return_value="tok"), \
+                patch('spotify.requests.put') as mock_put:
+            player.play()
+
+        sent = mock_put.call_args.kwargs["json"]
+        assert sent["offset"] == {"position": 4}
+        assert sent["position_ms"] == 30000
+
 
 def test_save_playback_state_falls_back_when_not_ours(monkeypatch):
     """Transferring playback away then shutting down must not lose the session"""
@@ -526,68 +597,6 @@ def test_cooldown_expires_and_recovery_clears_it(monkeypatch):
         with patch('spotify.requests.post', return_value=good):
             assert am.get_token() == "fresh"
         assert am.rejected_at == 0
-
-# --- context offset resolution ---
-def _page(items, has_next=False):
-    r = MagicMock()
-    r.status_code = 200
-    r.raise_for_status.return_value = None
-    r.json.return_value = {"items": items, "next": "url" if has_next else None}
-    return r
-
-def test_single_disc_album_offset_needs_no_request(monkeypatch):
-    monkeypatch.setenv("SPOTIFY_DEVICE_ID", "test_device")
-    with patch.dict('sys.modules', {'utils': MagicMock()}):
-        from spotify import SpotifyPlayer
-        p = SpotifyPlayer("rfid123", None, "spotify:album:abc")
-        with patch.object(p.auth_manager, "get_token", return_value="tok"), \
-                patch('spotify.requests.get') as mock_get:
-            item = {"track_number": 5, "disc_number": 1}
-            assert p._album_offset("abc", item, "spotify:track:x") == 4
-            mock_get.assert_not_called()
-
-def test_multi_disc_album_resolves_true_offset(monkeypatch):
-    """track_number restarts per disc, so disc 2 track 1 is not offset 0"""
-    monkeypatch.setenv("SPOTIFY_DEVICE_ID", "test_device")
-    with patch.dict('sys.modules', {'utils': MagicMock()}):
-        from spotify import SpotifyPlayer
-        p = SpotifyPlayer("rfid123", None, "spotify:album:abc")
-        # Disc 1 has 3 tracks; the wanted track is disc 2 track 1 -> index 3.
-        tracks = [{"uri": "spotify:track:a"}, {"uri": "spotify:track:b"},
-                  {"uri": "spotify:track:c"}, {"uri": "spotify:track:want"}]
-        with patch.object(p.auth_manager, "get_token", return_value="tok"), \
-                patch('spotify.requests.get', return_value=_page(tracks)):
-            item = {"track_number": 1, "disc_number": 2}
-            assert p._album_offset("abc", item, "spotify:track:want") == 3
-
-def test_playlist_offset_is_absolute_across_pages(monkeypatch):
-    """A match on page 2 must not report its index within that page"""
-    monkeypatch.setenv("SPOTIFY_DEVICE_ID", "test_device")
-    with patch.dict('sys.modules', {'utils': MagicMock()}):
-        from spotify import SpotifyPlayer
-        p = SpotifyPlayer("rfid123", None, "spotify:playlist:abc")
-        limit = SpotifyPlayer.PAGE_LIMIT
-        page1 = _page([{"track": {"uri": "spotify:track:%d" % i}}
-                       for i in range(limit)], has_next=True)
-        page2 = _page([{"track": {"uri": "spotify:track:other"}},
-                       {"track": {"uri": "spotify:track:want"}}])
-        with patch.object(p.auth_manager, "get_token", return_value="tok"), \
-                patch('spotify.requests.get', side_effect=[page1, page2]) as mock_get:
-            # Second entry of the second page -> limit + 1, not 1.
-            assert p._get_track_position_in_playlist(
-                "abc", "spotify:track:want") == limit + 1
-            # /albums/{id}/tracks rejects limit > 50, so never exceed it.
-            for call in mock_get.call_args_list:
-                assert call.kwargs["params"]["limit"] <= 50
-
-def test_missing_track_falls_back_to_zero(monkeypatch):
-    monkeypatch.setenv("SPOTIFY_DEVICE_ID", "test_device")
-    with patch.dict('sys.modules', {'utils': MagicMock()}):
-        from spotify import SpotifyPlayer
-        p = SpotifyPlayer("rfid123", None, "spotify:playlist:abc")
-        with patch.object(p.auth_manager, "get_token", return_value="tok"), \
-                patch('spotify.requests.get', return_value=_page([])):
-            assert p._get_track_position_in_playlist("abc", "nope") == 0
 
 # --- refresh token expiry warning ---
 def test_token_age_unknown_without_auth_date(monkeypatch, caplog):
@@ -886,7 +895,8 @@ class TestImpossiblePositions:
 
     def test_snapshot_takes_a_sane_position(self, monkeypatch):
         player = self._player(monkeypatch)
-        player.playback_state = {"offset": {"position": 0}, "position_ms": 0}
+        player.playback_state = {"offset": {"uri": "spotify:track:old"},
+                                 "position_ms": 0}
 
         state = player._state_from_playback({
             "item": self.ITEM,
@@ -895,7 +905,9 @@ class TestImpossiblePositions:
         })
 
         assert state["position_ms"] == 42000
-        assert state["offset"]["position"] == 1   # track_number 2, zero-based
+        # The track's own URI, free from the payload - no track_number/
+        # disc_number resolution needed, for an album or a playlist alike.
+        assert state["offset"]["uri"] == self.ITEM["uri"]
 
     def test_save_persists_the_last_good_position(self, monkeypatch):
         """save_playback_state must not write the garbage either"""
