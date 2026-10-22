@@ -55,6 +55,12 @@ class PlayerActionHandler:
     # off the caller's thread. See handle_action().
     SPOTIFY_ACTIONS = {"toggle_playback", "next_track", "previous_track"}
 
+    # How stale a held press may be when its turn comes. Actions take
+    # 0.6-1.3s, so this lets a press made early in a slow one still run,
+    # while one held up by a real stall (5.8s seen) is dropped rather than
+    # firing long after the button. A blink still means "this ran".
+    HELD_PRESS_MAX_AGE = 1.5
+
     def __init__(self, get_player, set_player, database_url, player_lock, reset_last_activity):
         self.get_player = get_player
         self.set_player = set_player
@@ -66,8 +72,11 @@ class PlayerActionHandler:
         # guard any more.
         self.shutdown_lock = threading.Lock()
 
-        # Held while a Spotify action is in flight; see handle_action().
-        self._spotify_busy = threading.Lock()
+        # Whether a Spotify action is in flight, and the one press held for
+        # after it; see handle_action(). Both under _spotify_state.
+        self._spotify_state = threading.Lock()
+        self._spotify_busy = False
+        self._held_press = None
 
         # Detected once: the control does not change while we run, and probing
         # on every keypress would add a subprocess to each one.
@@ -87,7 +96,7 @@ class PlayerActionHandler:
         }
 
     def handle_action(self, action):
-        """Run an action, or drop it if Spotify is still busy with the last
+        """Run an action, or hold it if Spotify is still busy with the last
 
         Spotify actions run on a worker so the caller is never blocked. Before
         that, the IR loop waited out each round-trip (0.8s typically, 5.8s
@@ -95,9 +104,13 @@ class PlayerActionHandler:
         every one of them after the child had stopped pressing. Volume queued
         behind them too: five unanswered presses became +50% at once.
 
-        So volume and shutdown still run here, immediately, and a Spotify
-        action that arrives while another is in flight is dropped rather than
-        queued. Its missing blink tells whoever pressed it to press again.
+        So volume and shutdown still run here, immediately. A Spotify action
+        that arrives while another is in flight is held, one deep: a newer
+        press replaces it, and it runs when the worker frees up unless it is
+        older than HELD_PRESS_MAX_AGE by then. Dropping outright was tried
+        first and lost presses made a few ms before the previous call
+        returned, which looked random from outside, since nothing shows that
+        Spotify is still being waited on.
         """
         self.reset_last_activity()
 
@@ -107,15 +120,25 @@ class PlayerActionHandler:
             return
 
         if action in self.SPOTIFY_ACTIONS:
-            if not self._spotify_busy.acquire(blocking=False):
-                logging.info(
-                    "Ignored %s: still busy with the previous press", action)
-                return
+            with self._spotify_state:
+                if self._spotify_busy:
+                    if self._held_press:
+                        logging.info("Replaced held %s with %s",
+                                     self._held_press[0], action)
+                    else:
+                        logging.info(
+                            "Holding %s: still busy with the previous press",
+                            action)
+                    self._held_press = (action, time.monotonic())
+                    return
+                self._spotify_busy = True
+
             self._blink(action)
             try:
-                self._start_worker(lambda: self._run_spotify_action(handler))
+                self._start_worker(lambda: self._run_spotify_actions(action))
             except Exception:
-                self._spotify_busy.release()
+                with self._spotify_state:
+                    self._spotify_busy = False
                 raise
             return
 
@@ -133,15 +156,30 @@ class PlayerActionHandler:
         threading.Thread(target=target, daemon=True,
                          name="spotify-action").start()
 
-    def _run_spotify_action(self, handler):
-        try:
-            handler()
-        except Exception as e:
-            # Nobody above this thread would log it; the IR loop's own
-            # guard only covers what runs on the IR thread.
-            logging.exception("Action failed: %s", e)
-        finally:
-            self._spotify_busy.release()
+    def _run_spotify_actions(self, action):
+        """Run action, then whatever press was held meanwhile, until none is"""
+        while True:
+            try:
+                self.action_map[action]()
+            except Exception as e:
+                # Nobody above this thread would log it; the IR loop's own
+                # guard only covers what runs on the IR thread.
+                logging.exception("Action failed: %s", e)
+
+            with self._spotify_state:
+                held, self._held_press = self._held_press, None
+                if held is None:
+                    self._spotify_busy = False
+                    return
+                action, pressed_at = held
+                age = time.monotonic() - pressed_at
+                if age > self.HELD_PRESS_MAX_AGE:
+                    # Only the newest press is held, so nothing older is left.
+                    logging.info("Dropped held %s: %.1fs old", action, age)
+                    self._spotify_busy = False
+                    return
+
+            self._blink(action)
 
     def _handle_shutdown_pressed(self):
         """A tap on the power button does nothing but say so in the log
@@ -498,8 +536,8 @@ class IrReceiver:
         batch instead of building a backlog.
 
         A `00` frame is a distinct press and is never dropped here, though
-        handle_action() drops a Spotify action that arrives while another is
-        still in flight.
+        handle_action() holds only the newest Spotify action that arrives
+        while another is still in flight.
         """
         hold_after = max(
             1, round(PlayerActionHandler.HOLD_TIME / self.IR_REPEAT_INTERVAL))
