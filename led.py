@@ -29,6 +29,31 @@ def flash_led(gpio_pin):
         time.sleep(0.1)
 
 
+_blink_lock = threading.Lock()
+
+
+def blink(gpio_pin, duration=0.1):
+    """Invert the LED once, briefly, without blocking the caller
+
+    Toggles rather than forcing off-then-on, so a steady LED blinks dark and a
+    dark one blinks lit, and a blink overlapping start_flashing() leaves the
+    pin where that loop expects it. A blink already in progress swallows the
+    next one: held volume keys repeat faster than a blink lasts.
+    """
+    if not _blink_lock.acquire(blocking=False):
+        return
+
+    def _blink():
+        try:
+            toggle_led(gpio_pin)
+            time.sleep(duration)
+            toggle_led(gpio_pin)
+        finally:
+            _blink_lock.release()
+
+    threading.Thread(target=_blink, daemon=True).start()
+
+
 def start_flashing(gpio_pin, interval=0.3):
     stop_event = threading.Event()
 

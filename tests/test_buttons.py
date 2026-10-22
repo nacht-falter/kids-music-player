@@ -54,6 +54,32 @@ def test_repeated_taps_never_shut_down(handler):
         mock_utils.shutdown.assert_not_called()
 
 
+@pytest.mark.parametrize("action", ["toggle_playback", "next_track",
+                                    "volume_up", "shutdown"])
+def test_a_press_blinks_the_green_led(handler, action):
+    with patch("buttons.utils"), patch("buttons.led") as mock_led:
+        handler.handle_action(action)
+    mock_led.blink.assert_called_once_with(23)
+
+
+def test_the_shutdown_hold_does_not_blink(handler):
+    """A blink outliving utils.shutdown() would relight the LED it turned off"""
+    with patch("buttons.utils"), patch("buttons.led") as mock_led:
+        handler.handle_action("shutdown_hold")
+    mock_led.blink.assert_not_called()
+
+
+def test_an_unknown_action_does_not_blink(handler):
+    with patch("buttons.led") as mock_led:
+        handler.handle_action("no_such_action")
+    mock_led.blink.assert_not_called()
+
+
+def test_no_led_module_is_fine(handler):
+    with patch("buttons.utils"), patch("buttons.led", None):
+        handler.handle_action("next_track")
+
+
 
 # --- recovering a player after the controller restarted ----------------------
 

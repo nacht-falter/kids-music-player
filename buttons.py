@@ -84,6 +84,12 @@ class PlayerActionHandler:
 
         handler = self.action_map.get(action)
         if handler:
+            # A visible sign the press arrived, before a Spotify call can make
+            # it look ignored. Not for the shutdown hold: utils.shutdown()
+            # turns the LED off, and a blink still running would toggle it
+            # back on, leaving a halted box looking ready.
+            if led and action != "shutdown_hold":
+                led.blink(23)
             handler()
         else:
             logging.warning(f"Unknown action: {action}")
