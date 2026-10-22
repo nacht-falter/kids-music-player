@@ -51,6 +51,10 @@ class PlayerActionHandler:
     # and unreachable, as it was before.
     HOLD_ACTIONS = {"shutdown": "shutdown_hold"}
 
+    # Actions that wait on the Spotify Web API, and so are run one at a time
+    # off the caller's thread. See handle_action().
+    SPOTIFY_ACTIONS = {"toggle_playback", "next_track", "previous_track"}
+
     def __init__(self, get_player, set_player, database_url, player_lock, reset_last_activity):
         self.get_player = get_player
         self.set_player = set_player
@@ -61,6 +65,9 @@ class PlayerActionHandler:
         # Serialises the shutdown itself; there is no confirmation state to
         # guard any more.
         self.shutdown_lock = threading.Lock()
+
+        # Held while a Spotify action is in flight; see handle_action().
+        self._spotify_busy = threading.Lock()
 
         # Detected once: the control does not change while we run, and probing
         # on every keypress would add a subprocess to each one.
@@ -80,19 +87,61 @@ class PlayerActionHandler:
         }
 
     def handle_action(self, action):
+        """Run an action, or drop it if Spotify is still busy with the last
+
+        Spotify actions run on a worker so the caller is never blocked. Before
+        that, the IR loop waited out each round-trip (0.8s typically, 5.8s
+        seen on toem) while presses piled up in lircd's socket, and then ran
+        every one of them after the child had stopped pressing. Volume queued
+        behind them too: five unanswered presses became +50% at once.
+
+        So volume and shutdown still run here, immediately, and a Spotify
+        action that arrives while another is in flight is dropped rather than
+        queued. Its missing blink tells whoever pressed it to press again.
+        """
         self.reset_last_activity()
 
         handler = self.action_map.get(action)
-        if handler:
-            # A visible sign the press arrived, before a Spotify call can make
-            # it look ignored. Not for the shutdown hold: utils.shutdown()
-            # turns the LED off, and a blink still running would toggle it
-            # back on, leaving a halted box looking ready.
-            if led and action != "shutdown_hold":
-                led.blink(23)
-            handler()
-        else:
+        if not handler:
             logging.warning(f"Unknown action: {action}")
+            return
+
+        if action in self.SPOTIFY_ACTIONS:
+            if not self._spotify_busy.acquire(blocking=False):
+                logging.info(
+                    "Ignored %s: still busy with the previous press", action)
+                return
+            self._blink(action)
+            try:
+                self._start_worker(lambda: self._run_spotify_action(handler))
+            except Exception:
+                self._spotify_busy.release()
+                raise
+            return
+
+        self._blink(action)
+        handler()
+
+    def _blink(self, action):
+        # A visible sign the press is being acted on. Not for the shutdown
+        # hold: utils.shutdown() turns the LED off, and a blink still running
+        # would toggle it back on, leaving a halted box looking ready.
+        if led and action != "shutdown_hold":
+            led.blink(23)
+
+    def _start_worker(self, target):
+        threading.Thread(target=target, daemon=True,
+                         name="spotify-action").start()
+
+    def _run_spotify_action(self, handler):
+        try:
+            handler()
+        except Exception as e:
+            # Nobody above this thread would log it; the IR loop's own
+            # guard only covers what runs on the IR thread.
+            logging.exception("Action failed: %s", e)
+        finally:
+            self._spotify_busy.release()
 
     def _handle_shutdown_pressed(self):
         """A tap on the power button does nothing but say so in the log
@@ -448,7 +497,9 @@ class IrReceiver:
         action collapses to a single action, and the ramp advances once per
         batch instead of building a backlog.
 
-        A `00` frame is a distinct press and is never dropped.
+        A `00` frame is a distinct press and is never dropped here, though
+        handle_action() drops a Spotify action that arrives while another is
+        still in flight.
         """
         hold_after = max(
             1, round(PlayerActionHandler.HOLD_TIME / self.IR_REPEAT_INTERVAL))

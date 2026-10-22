@@ -26,7 +26,112 @@ def handler():
             player_lock=threading.Lock(),
             reset_last_activity=MagicMock(),
         )
+    # Spotify actions run inline, so tests can assert on them the moment
+    # handle_action() returns. The threaded path has its own tests below.
+    h._start_worker = lambda target: target()
     return h
+
+
+@pytest.fixture
+def threaded_handler(handler):
+    """The handler with its real worker thread, and a next_track that waits"""
+    del handler._start_worker
+    release = threading.Event()
+    started = threading.Event()
+    player = MagicMock()
+
+    def slow_next_track():
+        started.set()
+        release.wait(timeout=5)
+
+    player.next_track.side_effect = slow_next_track
+    handler.get_player = MagicMock(return_value=player)
+    handler.player, handler.started, handler.release = player, started, release
+    yield handler
+    release.set()
+
+
+def wait_until_idle(handler):
+    for thread in threading.enumerate():
+        if thread.name == "spotify-action":
+            thread.join(timeout=5)
+    assert not handler._spotify_busy.locked()
+
+
+class TestPressesWhileSpotifyIsBusy:
+    """Presses must not pile up behind a slow Spotify call
+
+    The IR loop used to run each action inline, so presses made during a
+    0.8-5.8s round-trip queued in lircd's socket and all ran after the child
+    had stopped pressing. Volume queued behind them and jumped by 50% at once.
+    """
+
+    def test_the_caller_is_not_blocked(self, threaded_handler):
+        with patch("buttons.utils"), patch("buttons.led", None):
+            threaded_handler.handle_action("next_track")
+            assert threaded_handler.started.wait(timeout=5)
+            # Still in flight, yet handle_action() has already returned.
+            assert threaded_handler._spotify_busy.locked()
+            threaded_handler.release.set()
+            wait_until_idle(threaded_handler)
+
+    def test_a_spotify_press_while_busy_is_dropped(self, threaded_handler):
+        with patch("buttons.utils"), patch("buttons.led", None):
+            threaded_handler.handle_action("next_track")
+            assert threaded_handler.started.wait(timeout=5)
+            for action in ("next_track", "previous_track", "toggle_playback"):
+                threaded_handler.handle_action(action)
+            threaded_handler.release.set()
+            wait_until_idle(threaded_handler)
+
+        assert threaded_handler.player.next_track.call_count == 1
+        threaded_handler.player.previous_track.assert_not_called()
+        threaded_handler.player.toggle_playback.assert_not_called()
+
+    def test_a_dropped_press_does_not_blink(self, threaded_handler):
+        with patch("buttons.utils"), patch("buttons.led") as mock_led:
+            threaded_handler.handle_action("next_track")
+            assert threaded_handler.started.wait(timeout=5)
+            threaded_handler.handle_action("next_track")
+            threaded_handler.release.set()
+            wait_until_idle(threaded_handler)
+
+        assert mock_led.blink.call_count == 1
+
+    def test_volume_is_applied_immediately_while_busy(self, threaded_handler):
+        volume_up = MagicMock()
+        threaded_handler.action_map["volume_up"] = volume_up
+        with patch("buttons.utils"), patch("buttons.led", None):
+            threaded_handler.handle_action("next_track")
+            assert threaded_handler.started.wait(timeout=5)
+            threaded_handler.handle_action("volume_up")
+            # Ran on this thread, before next_track was allowed to finish.
+            volume_up.assert_called_once()
+            threaded_handler.release.set()
+            wait_until_idle(threaded_handler)
+
+    def test_a_press_after_the_call_returns_is_taken(self, threaded_handler):
+        with patch("buttons.utils"), patch("buttons.led", None):
+            threaded_handler.release.set()
+            threaded_handler.handle_action("next_track")
+            wait_until_idle(threaded_handler)
+            threaded_handler.handle_action("next_track")
+            wait_until_idle(threaded_handler)
+
+        assert threaded_handler.player.next_track.call_count == 2
+
+    def test_a_failing_action_frees_the_worker(self, threaded_handler, caplog):
+        threaded_handler.player.next_track.side_effect = RuntimeError("boom")
+        with patch("buttons.utils"), patch("buttons.led", None):
+            threaded_handler.handle_action("next_track")
+            wait_until_idle(threaded_handler)
+        assert "boom" in caplog.text
+
+        threaded_handler.player.next_track.side_effect = None
+        with patch("buttons.utils"), patch("buttons.led", None):
+            threaded_handler.handle_action("next_track")
+            wait_until_idle(threaded_handler)
+        assert threaded_handler.player.next_track.call_count == 2
 
 
 def test_a_tap_does_nothing_and_is_silent(handler):
