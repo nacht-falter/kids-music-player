@@ -304,7 +304,8 @@ def test_get_serves_the_page_and_counts_as_activity(app, monkeypatch):
         server.server_close()
 
 
-def test_a_failing_section_still_returns_a_page(app, monkeypatch):
+@pytest.mark.parametrize("path", ["part/spotify", "full"])
+def test_a_failing_section_still_says_why(app, monkeypatch, path):
     """A 500 with an empty body tells whoever opened it nothing"""
     def explode():
         raise RuntimeError("Spotify unreachable")
@@ -312,11 +313,56 @@ def test_a_failing_section_still_returns_a_page(app, monkeypatch):
     monkeypatch.setattr(status_web, "spotify_snapshot", explode)
     server = status_web.start(app, port=0)
     try:
-        url = "http://127.0.0.1:%d/" % server.server_address[1]
+        url = "http://127.0.0.1:%d/%s" % (server.server_address[1], path)
         with pytest.raises(urllib.error.HTTPError) as raised:
             urllib.request.urlopen(url, timeout=5)
         assert raised.value.code == 500
         assert "Spotify unreachable" in raised.value.read().decode()
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_the_page_arrives_before_spotify_answers(app, monkeypatch):
+    """It used to show nothing at all for 13 seconds on toem"""
+    def never():
+        raise AssertionError("the page itself must not ask Spotify")
+
+    monkeypatch.setattr(status_web, "spotify_snapshot", never)
+    body = status_web.shell_page().decode()
+    for part, _, _ in status_web.PARTS:
+        assert "data-part='%s'" % part in body
+
+
+def test_parts_render_the_sections(app, monkeypatch):
+    monkeypatch.setattr(status_web, "spotify_snapshot", snapshot)
+    server = status_web.start(app, port=0)
+    try:
+        base = "http://127.0.0.1:%d/" % server.server_address[1]
+        with urllib.request.urlopen(base + "part/spotify", timeout=5) as response:
+            body = response.read().decode()
+        assert "<h2>Spotify</h2>" in body and "<h2>Playback</h2>" in body
+        with urllib.request.urlopen(base + "full", timeout=5) as response:
+            assert "<h2>Device</h2>" in response.read().decode()
+        with pytest.raises(urllib.error.HTTPError) as raised:
+            urllib.request.urlopen(base + "part/nonsense", timeout=5)
+        assert raised.value.code == 404
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_only_a_manual_refresh_counts_as_activity(app):
+    """A forgotten tab refreshing itself must not keep the device awake"""
+    touched = []
+    app.reset_last_activity = lambda: touched.append(True)
+    server = status_web.start(app, port=0)
+    try:
+        base = "http://127.0.0.1:%d/part/player" % server.server_address[1]
+        urllib.request.urlopen(base, timeout=5).read()
+        assert not touched
+        urllib.request.urlopen(base + "?touch=1", timeout=5).read()
+        assert touched
     finally:
         server.shutdown()
         server.server_close()

@@ -334,10 +334,11 @@ def spotifyd_error_lines(limit=JOURNAL_LINES):
     and only reach us as "the device is not there".
 
     -t matches the syslog identifier, so this works whether spotifyd runs as a
-    user unit or a system one. Where the journal is volatile it covers the
-    current boot only.
+    user unit or a system one. -b because the journal is persistent on toem:
+    without it the "since boot" count covered every boot on record, and
+    reading all of them took 4.9 s of a Pi 1's only core per call.
     """
-    raw = sh("journalctl -t spotifyd --no-pager -o short-precise "
+    raw = sh("journalctl -b -t spotifyd --no-pager -o short-precise "
              "| grep -iE '%s' | tail -n %d" % (SPOTIFYD_COMPLAINTS, limit),
              timeout=8)
     lines = []
@@ -753,7 +754,10 @@ pre { margin: 0; padding: .2rem 0; font-size: .78rem; line-height: 1.5;
       overflow-x: auto; white-space: pre; color: #444; }
 pre .logbad { color: #c62b2b; font-weight: 700; }
 pre .logwarn { color: #a06a00; }
-a.button { display: block; width: 100%; text-align: center; margin-top: 1.5rem;
+[data-part] { transition: opacity .2s; }
+[data-part].loading { opacity: .45; }
+.stale { color: #c62b2b; }
+.button { display: block; border: 0; font: inherit; cursor: pointer; width: 100%; text-align: center; margin-top: 1.5rem;
         background: #e6e6ea; color: #1c1c1e; border-radius: 10px;
         padding: .9rem 1rem; font-size: 1.05rem; font-weight: 600;
         text-decoration: none; }
@@ -762,7 +766,7 @@ a.button { display: block; width: 100%; text-align: center; margin-top: 1.5rem;
   .card { background: #1d1d20; box-shadow: none; }
   .row { border-bottom-color: #2b2b30; }
   .muted, pre { color: #a0a0aa; }
-  a.button { background: #2b2b30; color: #ececf1; }
+  .button { background: #2b2b30; color: #ececf1; }
   pre .logbad { color: #ff6b6b; } pre .logwarn { color: #e0a63c; }
 }
 """
@@ -777,38 +781,117 @@ def page(title, body):
     ).encode("utf-8")
 
 
-def collect_status(app):
-    """Every section of the page, in the order it is read"""
+def section_html(title, rows):
+    items = "".join(
+        "<div class='row'><span class='dot %s'></span>"
+        "<span class='label'>%s</span>"
+        "<span class='value'>%s</span></div>"
+        % (state, html.escape(label), html.escape(str(value)))
+        for label, value, state in rows)
+    return "<h2>%s</h2><div class='card'>%s</div>" % (html.escape(title), items)
+
+
+def spotify_part(app):
+    # One part for both sections: they share a snapshot, and each snapshot is
+    # three round trips to Spotify.
     snap = spotify_snapshot()
-    return [
-        ("Spotify", spotify_rows(snap)),
-        ("Playback", playback_rows(app, snap)),
-        ("Player", player_rows(app)),
-        ("Device", device_rows()),
-    ]
+    return (section_html("Spotify", spotify_rows(snap))
+            + section_html("Playback", playback_rows(app, snap)))
+
+
+def log_part(app):
+    return ("<h2>Recent activity</h2><div class='card text'>%s</div>"
+            % log_html(app)
+            + "<h2>spotifyd complaints</h2><div class='card text'>%s</div>"
+            % spotifyd_html())
+
+
+# The page in reading order, each part fetched on its own so the quick ones
+# show while Spotify is still answering: (name, heading shown while loading,
+# renderer).
+PARTS = [
+    ("spotify", "Spotify", spotify_part),
+    ("player", "Player", lambda app: section_html("Player", player_rows(app))),
+    ("device", "Device", lambda app: section_html("Device", device_rows())),
+    ("log", "Recent activity", log_part),
+]
+RENDERERS = {name: render for name, _, render in PARTS}
+
+# How often an open page refreshes itself. Each refresh costs a few seconds
+# of CPU on a Pi 1, whose single core also has to serve the buttons.
+REFRESH_SECONDS = 30
+
+SCRIPT = """
+const parts = [...document.querySelectorAll('[data-part]')];
+const stamp = document.getElementById('stamp');
+let busy = false;
+
+function load(touch) {
+  if (busy) return;
+  busy = true;
+  stamp.textContent = 'Updating...';
+  let lost = false, when = null;
+  Promise.all(parts.map(el => {
+    el.classList.add('loading');
+    return fetch('/part/' + el.dataset.part + (touch ? '?touch=1' : ''),
+                 {cache: 'no-store'})
+      .then(r => { when = r.headers.get('Date') || when; return r.text(); })
+      .then(text => { el.innerHTML = text; })
+      .catch(() => { lost = true; })
+      .finally(() => el.classList.remove('loading'));
+  })).then(() => {
+    busy = false;
+    // The device's clock, not the phone's: a wrong Pi clock is itself a
+    // finding worth a photo.
+    const at = when ? new Date(when).toLocaleTimeString() : '';
+    stamp.textContent = lost ? 'Device not reachable - showing the last answer'
+                             : 'Updated ' + at;
+    stamp.className = lost ? 'muted stale' : 'muted';
+  });
+}
+
+document.getElementById('refresh').addEventListener('click', () => load(true));
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') load(false);
+});
+setInterval(() => {
+  if (document.visibilityState === 'visible') load(false);
+}, %d * 1000);
+load(false);
+""" % REFRESH_SECONDS
+
+
+def shell_page():
+    """The page itself, sent at once; its sections load in place
+
+    Built because the whole page used to arrive in one piece after 13
+    seconds of a blank screen.
+    """
+    name = os.getenv("APP_NAME", "player")
+    body = (
+        "<h1>%s</h1>" % html.escape(name)
+        + "<p class='muted' id='stamp'>Loading...</p>"
+        + "".join("<div data-part='%s' class='loading'><h2>%s</h2>"
+                  "<div class='card text'><p class='muted'>Loading...</p>"
+                  "</div></div>" % (part, html.escape(heading))
+                  for part, heading, _ in PARTS)
+        + "<button class='button' id='refresh'>Refresh</button>"
+        + "<noscript><a class='button' href='/full'>Show the page without "
+          "JavaScript</a></noscript>"
+        + "<script>" + SCRIPT + "</script>"
+    )
+    return page("%s status" % name, body)
 
 
 def status_page(app):
-    blocks = []
-    for title, rows in collect_status(app):
-        items = "".join(
-            "<div class='row'><span class='dot %s'></span>"
-            "<span class='label'>%s</span>"
-            "<span class='value'>%s</span></div>"
-            % (state, html.escape(label), html.escape(str(value)))
-            for label, value, state in rows)
-        blocks.append("<h2>%s</h2><div class='card'>%s</div>"
-                      % (html.escape(title), items))
-
+    """The whole page rendered in one go, for a browser without JavaScript"""
     name = os.getenv("APP_NAME", "player")
     body = (
         "<h1>%s</h1>" % html.escape(name)
         + "<p class='muted'>%s</p>" % datetime.datetime.now().strftime(
             "%d %b %Y, %H:%M:%S")
-        + "".join(blocks)
-        + "<h2>Recent activity</h2><div class='card text'>%s</div>" % log_html(app)
-        + "<h2>spotifyd complaints</h2><div class='card text'>%s</div>" % spotifyd_html()
-        + "<a class='button' href='/'>Refresh</a>"
+        + "".join(render(app) for _, _, render in PARTS)
+        + "<a class='button' href='/full'>Refresh</a>"
     )
     return page("%s status" % name, body)
 
@@ -826,6 +909,20 @@ def make_handler(app):
             # card scans the log exists for.
             logging.debug("status page: " + fmt, *args)
 
+        def respond_part(self, name, query):
+            if app is not None and "touch=1" in query:
+                # The Refresh button: someone is at the page. The automatic
+                # refreshes leave the idle timer alone, so a forgotten tab
+                # cannot keep a battery device awake indefinitely.
+                app.reset_last_activity()
+            try:
+                self.respond(RENDERERS[name](app).encode("utf-8"))
+            except Exception as error:
+                logging.exception("Status page part %s failed: %s", name, error)
+                self.respond(("<div class='card text'><p class='stale'>"
+                              "Could not load: %s</p></div>"
+                              % html.escape(str(error))).encode("utf-8"), 500)
+
         def respond(self, body, status=200):
             self.send_response(status)
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -835,13 +932,18 @@ def make_handler(app):
             self.wfile.write(body)
 
         def do_GET(self):
-            path = urllib.parse.urlparse(self.path).path
-            if path in ("/", "/status"):
+            url = urllib.parse.urlparse(self.path)
+            path = url.path
+            if path.startswith("/part/") and path[6:] in RENDERERS:
+                self.respond_part(path[6:], url.query)
+            elif path in ("/", "/status"):
                 if app is not None:
                     # Someone is standing at the device looking at it, so it
-                    # must not switch itself off mid-diagnosis. The page has
-                    # no auto-refresh precisely so that a forgotten open tab
-                    # cannot keep a battery device awake indefinitely.
+                    # must not switch itself off mid-diagnosis.
+                    app.reset_last_activity()
+                self.respond(shell_page())
+            elif path == "/full":
+                if app is not None:
                     app.reset_last_activity()
                 try:
                     self.respond(status_page(app))
