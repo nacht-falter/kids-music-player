@@ -4,10 +4,13 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 import pytest
 from unittest.mock import patch, MagicMock
 import json
+import socket
 import sqlite3
 import time
 
 import requests
+
+import spotify
 
 def setup_in_memory_db():
     db = sqlite3.connect(":memory:")
@@ -1292,3 +1295,73 @@ class TestResumeNeedsAContextWeLoaded:
         played, resumed, _ = self.toggle(player, None)
         played.assert_called_once_with()
         resumed.assert_not_called()
+
+
+# --- timeouts and slow-call logging ------------------------------------------
+
+class TestApiWrapper:
+    """Every Spotify call has a timeout, and a slow one says where time went
+
+    The press-handling worker runs these calls; one that never returned would
+    leave toggle/next/previous dead until a restart.
+    """
+
+    def test_a_timeout_is_always_passed(self):
+        with patch("spotify.requests.get") as get:
+            spotify._api("get", "https://api.spotify.com/v1/me/player")
+        assert get.call_args.kwargs["timeout"] == spotify.API_TIMEOUT
+
+    def test_an_explicit_timeout_is_kept(self):
+        with patch("spotify.requests.put") as put:
+            spotify._api("put", "https://x/y", timeout=1)
+        assert put.call_args.kwargs["timeout"] == 1
+
+    def test_every_call_site_goes_through_it(self):
+        """A bare requests call would bypass both timeout and timing"""
+        import inspect
+        import re
+        source = inspect.getsource(spotify)
+        assert not re.search(r"requests\.(get|post|put|delete)\(", source)
+
+    def test_a_fast_call_logs_nothing(self, caplog):
+        with patch("spotify.requests.get"), \
+                patch("spotify.time.monotonic", side_effect=[100.0, 100.5]):
+            spotify._api("get", "https://api.spotify.com/v1/me/player")
+        assert "Slow Spotify call" not in caplog.text
+
+    def test_a_slow_call_logs_its_dns_share(self, caplog):
+        def slow_dns_then_answer(url, **kwargs):
+            spotify._dns_time.seconds += 5.0
+            return MagicMock()
+
+        with patch("spotify.requests.post", side_effect=slow_dns_then_answer), \
+                patch("spotify.time.monotonic", side_effect=[100.0, 105.8]):
+            spotify._api("post",
+                         "https://api.spotify.com/v1/me/player/previous?x=1")
+
+        assert ("Slow Spotify call: POST /v1/me/player/previous took 5.8s "
+                "(DNS 5.0s, rest 0.8s)") in caplog.text
+
+    def test_a_slow_failure_is_logged_and_still_raised(self, caplog):
+        with patch("spotify.requests.get",
+                   side_effect=requests.Timeout("read timed out")), \
+                patch("spotify.time.monotonic", side_effect=[100.0, 110.0]):
+            with pytest.raises(requests.Timeout):
+                spotify._api("get", "https://api.spotify.com/v1/me/player")
+        assert "took 10.0s" in caplog.text
+
+    def test_dns_time_does_not_leak_into_the_next_call(self, caplog):
+        spotify._dns_time.seconds = 9.0
+        with patch("spotify.requests.get"), \
+                patch("spotify.time.monotonic", side_effect=[100.0, 103.0]):
+            spotify._api("get", "https://api.spotify.com/v1/me/player")
+        assert "(DNS 0.0s, rest 3.0s)" in caplog.text
+
+    def test_lookups_are_timed_and_passed_through(self):
+        spotify._dns_time.seconds = 0.0
+        with patch("spotify._real_getaddrinfo",
+                   return_value=["addr"]) as real, \
+                patch("spotify.time.monotonic", side_effect=[10.0, 10.25]):
+            assert socket.getaddrinfo("api.spotify.com", 443) == ["addr"]
+        real.assert_called_once_with("api.spotify.com", 443)
+        assert spotify._dns_time.seconds == 0.25

@@ -2,12 +2,70 @@ import datetime
 import json
 import logging
 import os
+import socket
 import sqlite3
+import threading
 import time
+import urllib.parse
 
 import requests
 
 import utils
+
+
+# Every request needs one. Without it a stalled connection blocked forever:
+# on toem a press-handling worker would then sit in the call for good, and
+# toggle/next/previous would do nothing until the service was restarted.
+# (connect, read) in seconds; transfers and seeks normally answer in under 1s.
+API_TIMEOUT = (5, 10)
+
+# Calls slower than this are logged with where the time went. toem saw
+# repeated 5.7-6.0s stalls (2026-10-22/26) on next, previous and toggle alike,
+# about 1 in 40 calls. A fixed ~5s on top of a normal call fits a lost DNS
+# reply, which glibc retries after 5s - unproven, hence the DNS figure below.
+SLOW_CALL_SECONDS = 2.0
+
+_dns_time = threading.local()
+_real_getaddrinfo = socket.getaddrinfo
+
+
+def _timed_getaddrinfo(*args, **kwargs):
+    """socket.getaddrinfo that adds its duration to a per-thread total
+
+    Process-wide, because urllib3 resolves names deep inside its own
+    connection code and offers no hook for it. It only measures; the result
+    and any exception pass through unchanged.
+    """
+    start = time.monotonic()
+    try:
+        return _real_getaddrinfo(*args, **kwargs)
+    finally:
+        _dns_time.seconds = (getattr(_dns_time, "seconds", 0.0)
+                             + time.monotonic() - start)
+
+
+socket.getaddrinfo = _timed_getaddrinfo
+
+
+def _api(verb, url, **kwargs):
+    """requests.<verb>(url, ...) with a timeout, logging it when slow
+
+    The function is looked up on each call rather than bound at import, so
+    tests that patch spotify.requests.get and friends keep working.
+    """
+    kwargs.setdefault("timeout", API_TIMEOUT)
+    _dns_time.seconds = 0.0
+    start = time.monotonic()
+    try:
+        return getattr(requests, verb)(url, **kwargs)
+    finally:
+        elapsed = time.monotonic() - start
+        if elapsed > SLOW_CALL_SECONDS:
+            dns = _dns_time.seconds
+            logging.warning(
+                "Slow Spotify call: %s %s took %.1fs (DNS %.1fs, rest %.1fs)",
+                verb.upper(), urllib.parse.urlparse(url).path, elapsed,
+                dns, elapsed - dns)
 
 
 class SpotifyAuthError(requests.RequestException):
@@ -84,8 +142,8 @@ class SpotifyAuthManager:
 
         for attempt in range(retries):
             try:
-                response = requests.post(
-                    token_url, data=token_data, headers=token_headers)
+                response = _api(
+                    "post", token_url, data=token_data, headers=token_headers)
 
                 # The reason lives in the body, not the status line. Without
                 # this the 2026-08-16 outage showed only "400 Bad Request"
@@ -218,8 +276,8 @@ def device_is_playing():
         if not token:
             return False
 
-        response = requests.get(
-            "https://api.spotify.com/v1/me/player",
+        response = _api(
+            "get", "https://api.spotify.com/v1/me/player",
             headers={"Authorization": "Bearer " + token})
         if response.status_code == 204:
             return False
@@ -301,8 +359,7 @@ class SpotifyPlayer:
         url = f"{self.base_url}/me/player"
         data = {"device_ids": [self.device_id], "play": play}
         try:
-            response = requests.put(
-                url, headers=self._get_headers(), json=data)
+            response = _api("put", url, headers=self._get_headers(), json=data)
             response.raise_for_status()
             logging.info("Playback transferred to device %s", self.device_id)
             return True
@@ -557,8 +614,7 @@ class SpotifyPlayer:
 
     def check_playback_status(self):
         try:
-            response = requests.get(
-                f"{self.base_url}/me/player", headers=self._get_headers())
+            response = _api("get", f"{self.base_url}/me/player", headers=self._get_headers())
             if response.status_code == 204:
                 self.active_device = None
                 # Nothing is playing anywhere. Leaving the cached flag alone
@@ -606,8 +662,7 @@ class SpotifyPlayer:
         }
 
         try:
-            response = requests.put(
-                url, headers=self._get_headers(), json=data)
+            response = _api("put", url, headers=self._get_headers(), json=data)
             response.raise_for_status()
             self.playing = True
             self.playback_started = True
@@ -629,7 +684,7 @@ class SpotifyPlayer:
         """
         url = self._device_url("play")
         try:
-            response = requests.put(url, headers=self._get_headers(), json={})
+            response = _api("put", url, headers=self._get_headers(), json={})
             response.raise_for_status()
             self.playing = True
             self.playback_started = True
@@ -644,7 +699,7 @@ class SpotifyPlayer:
             return
         url = self._device_url("pause")
         try:
-            response = requests.put(url, headers=self._get_headers())
+            response = _api("put", url, headers=self._get_headers())
             response.raise_for_status()
             self.playing = False
             # We have now driven this player's playback, so a later button
@@ -705,7 +760,7 @@ class SpotifyPlayer:
             return
         url = self._device_url("next")
         try:
-            response = requests.post(url, headers=self._get_headers())
+            response = _api("post", url, headers=self._get_headers())
             response.raise_for_status()
             self.playing = True
             self._forget_good_position()
@@ -718,7 +773,7 @@ class SpotifyPlayer:
         url = (f"{self.base_url}/me/player/seek"
                f"?position_ms=0&device_id={self.device_id}")
         try:
-            response = requests.put(url, headers=self._get_headers())
+            response = _api("put", url, headers=self._get_headers())
             response.raise_for_status()
             self.playing = True
             self._note_intended_position(0)
@@ -743,7 +798,7 @@ class SpotifyPlayer:
 
         url = self._device_url("previous")
         try:
-            response = requests.post(url, headers=self._get_headers())
+            response = _api("post", url, headers=self._get_headers())
             response.raise_for_status()
             self.playing = True
             self._forget_good_position()
@@ -756,8 +811,7 @@ class SpotifyPlayer:
         data = {"context_uri": self._context_uri(),
                 "offset": {"position": 0}, "position_ms": 0}
         try:
-            response = requests.put(
-                url, headers=self._get_headers(), json=data)
+            response = _api("put", url, headers=self._get_headers(), json=data)
             response.raise_for_status()
             self.playing = True
             self._note_intended_position(0)
@@ -904,8 +958,8 @@ class SpotifySeriesPlayer(SpotifyPlayer):
 
     def _playlist_snapshot(self):
         try:
-            response = requests.get(
-                f"{self.base_url}/playlists/{self.playlist_id}",
+            response = _api(
+                "get", f"{self.base_url}/playlists/{self.playlist_id}",
                 headers=self._get_headers(),
                 params={"fields": "snapshot_id"})
             response.raise_for_status()
@@ -927,7 +981,7 @@ class SpotifySeriesPlayer(SpotifyPlayer):
         episodes = []
 
         while True:
-            response = requests.get(url, headers=headers, params=params)
+            response = _api("get", url, headers=headers, params=params)
             response.raise_for_status()
             page = response.json()
 
