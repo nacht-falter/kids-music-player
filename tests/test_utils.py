@@ -297,7 +297,8 @@ def test_create_player_skips_readiness_check_after_failed_transfer():
                       "playback_state": None, "location": "spotify:album:x"}
         assert create_player(music_data, retries=3) is None
 
-    assert calls["is_ready"] == 0
+    # Only the up-front "already active?" check - none after the transfers.
+    assert calls["is_ready"] == 1
 
 
 def test_create_player_still_checks_readiness_after_successful_transfer():
@@ -309,7 +310,8 @@ def test_create_player_still_checks_readiness_after_successful_transfer():
 
     def ready(self):
         calls["is_ready"] += 1
-        return True
+        # Not active before the transfer, ready after it.
+        return calls["is_ready"] > 1
 
     with patch.object(spotify.SpotifyPlayer, "transfer_playback", ok_transfer), \
             patch.object(spotify.SpotifyPlayer, "is_ready", ready), \
@@ -318,7 +320,44 @@ def test_create_player_still_checks_readiness_after_successful_transfer():
                       "playback_state": None, "location": "spotify:album:x"}
         assert create_player(music_data, retries=3) is not None
 
-    assert calls["is_ready"] == 1
+    assert calls["is_ready"] == 2
+
+
+def test_create_player_does_not_transfer_to_the_already_active_device():
+    """A transfer with play=False paused a speaker that was playing here"""
+    import spotify
+    transfer = MagicMock(return_value=True)
+
+    with patch.object(spotify.SpotifyPlayer, "transfer_playback", transfer), \
+            patch.object(spotify.SpotifyPlayer, "is_ready", lambda self: True), \
+            patch.dict(os.environ, {"SPOTIFY_DEVICE_ID": "d"}):
+        music_data = {"rfid": "abc", "source": "spotify",
+                      "playback_state": None, "location": "spotify:album:x"}
+        assert create_player(music_data, retries=3) is not None
+
+    transfer.assert_not_called()
+
+
+def test_create_player_asks_whether_already_active_only_once():
+    """A retry means it was not active; asking again only adds a round trip"""
+    import spotify
+    calls = {"is_ready": 0}
+
+    def counted_is_ready(self):
+        calls["is_ready"] += 1
+        return False
+
+    with patch.object(spotify.SpotifyPlayer, "transfer_playback",
+                      lambda self, play=False: True), \
+            patch.object(spotify.SpotifyPlayer, "is_ready", counted_is_ready), \
+            patch.dict(os.environ, {"SPOTIFY_DEVICE_ID": "d"}), \
+            patch("utils.time.sleep"):
+        music_data = {"rfid": "abc", "source": "spotify",
+                      "playback_state": None, "location": "spotify:album:x"}
+        assert create_player(music_data, retries=3) is None
+
+    # One up-front check, then one after each of the three transfers.
+    assert calls["is_ready"] == 4
 
 
 def test_create_player_retries_when_the_token_is_merely_unavailable(monkeypatch):
@@ -534,6 +573,7 @@ def test_explain_says_so_when_nothing_can_be_read(tmp_path, monkeypatch, caplog)
 def test_create_player_explains_once(monkeypatch):
     player = MagicMock()
     player.transfer_playback.return_value = False
+    player.is_ready.return_value = False    # not already the active device
     monkeypatch.setattr("spotify.SpotifyPlayer", lambda *a, **k: player)
     with patch.object(utils, "explain_missing_device") as explain, \
             patch.object(utils.time, "sleep"):

@@ -204,6 +204,15 @@ def create_player(music_data, retries=10, delay=1):
         for attempt in range(retries):
             try:
                 player = player_class(rfid, playback_state, location)
+                # spotifyd outlives this process. Rebuilt under a speaker that
+                # is still playing, this device already holds the session, and
+                # transferring with play=False paused it - only for the press
+                # that rebuilt the player to resume it again (toem,
+                # 2026-10-26). Asked once: a retry means it was not active.
+                if attempt == 0 and player.is_ready():
+                    logging.info(
+                        "Spotify player ready; already the active device")
+                    return player
                 transferred = player.transfer_playback(play=False)
             except SpotifyAuthError as e:
                 if e.permanent:
