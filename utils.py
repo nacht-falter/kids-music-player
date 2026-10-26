@@ -1,3 +1,4 @@
+import datetime
 import json
 import logging
 import os
@@ -6,6 +7,7 @@ import sqlite3
 import subprocess
 import time
 
+import db_setup
 from local import AudioPlayer
 
 try:
@@ -306,6 +308,26 @@ def save_last_played(db, rfid):
     )
     db.commit()
     logging.info("Last played RFID saved to database: %s", rfid)
+
+
+def add_play_time(database_url, seconds, day=None):
+    """Add seconds of playback to a day's total
+
+    On a connection of its own: this runs on the watchdog thread, and the
+    app's connection belongs to the main thread. INSERT OR IGNORE plus UPDATE
+    rather than an upsert, which needs a newer sqlite than Raspbian may ship.
+    """
+    day = (day or datetime.date.today()).isoformat()
+    db = sqlite3.connect(database_url, timeout=2)
+    try:
+        db_setup.create_play_time_table(db)
+        db.execute("INSERT OR IGNORE INTO play_time (day, seconds) "
+                   "VALUES (?, 0)", (day,))
+        db.execute("UPDATE play_time SET seconds = seconds + ? WHERE day = ?",
+                   (int(round(seconds)), day))
+        db.commit()
+    finally:
+        db.close()
 
 
 def get_last_played_rfid(db):

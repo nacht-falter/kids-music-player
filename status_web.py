@@ -439,6 +439,31 @@ def loaded_card_rows(app, snap):
     return rows
 
 
+def play_time_rows(app, today=None):
+    """How long music has played, as the watchdog counted it
+
+    Counted every STATE_REFRESH_INTERVAL while this device plays, so it is
+    good to about a minute per start and stop. The day comes from the Pi's
+    clock, which is only right once it has synced over the network.
+    """
+    database_url = (app.database_url if app
+                    else os.environ.get("DATABASE_URL"))
+    today = today or datetime.date.today()
+    week_start = today - datetime.timedelta(days=6)
+    found = db_query(database_url,
+                     "SELECT day, seconds FROM play_time WHERE day >= ?",
+                     (week_start.isoformat(),))
+    if found is None:  # no table yet: nothing has played since the update
+        found = []
+    by_day = dict(found)
+    return [
+        ("Played today",
+         format_duration(by_day.get(today.isoformat(), 0)), FLAT),
+        ("Played in the last 7 days",
+         format_duration(sum(by_day.values())), FLAT),
+    ]
+
+
 def playback_rows(app, snap):
     rows = [now_playing_row(snap)]
     rows.extend(loaded_card_rows(app, snap))
@@ -454,6 +479,8 @@ def playback_rows(app, snap):
     rows.append(("Local playback (mpd)",
                  "running" if mpd_state == "active" else mpd_state,
                  OK if mpd_state == "active" else WARN))
+
+    rows.extend(play_time_rows(app))
 
     complaints = spotifyd_error_lines()
     rows.append(("spotifyd complaints",

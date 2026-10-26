@@ -202,6 +202,47 @@ def test_idle_without_a_card_is_not_activity(app):
     assert app.last_activity == 0
 
 
+def test_play_time_counts_the_interval_since_the_last_check(app, tmp_path):
+    app.database_url = str(tmp_path / "toem.db")
+    player = MagicMock()
+    player.playing = True
+    app.player = player
+
+    with patch("main.time.monotonic", side_effect=[100.0, 100.0, 130.0, 130.0]):
+        app.record_playback_activity()  # first check: nothing to measure yet
+        app.record_playback_activity()
+
+    import sqlite3
+    db = sqlite3.connect(app.database_url)
+    assert db.execute("SELECT seconds FROM play_time").fetchall() == [(30,)]
+
+
+def test_paused_playback_adds_no_play_time(app, tmp_path):
+    app.database_url = str(tmp_path / "toem.db")
+    app.last_play_check = 0
+    player = MagicMock()
+    player.playing = False
+    app.player = player
+
+    with patch("main.utils.add_play_time") as add:
+        app.record_playback_activity()
+
+    add.assert_not_called()
+
+
+def test_a_delayed_check_is_not_counted_as_extra_play_time(app):
+    """A card scan holds player_lock for seconds; the music did not play longer"""
+    with patch("main.utils.add_play_time") as add:
+        app.record_play_time(600)
+    assert add.call_args.args[1] == 2 * app.STATE_REFRESH_INTERVAL
+
+
+def test_a_database_error_does_not_stop_the_watchdog(app):
+    import sqlite3
+    with patch("main.utils.add_play_time", side_effect=sqlite3.OperationalError("locked")):
+        app.record_play_time(30)  # must not raise
+
+
 def test_startup_warns_when_the_shutdown_dry_run_is_left_on(monkeypatch, caplog, tmp_path):
     """A box that cannot power itself off drains the bank all night (item 34),
     and the symptom looks nothing like a leftover test flag - so say it every

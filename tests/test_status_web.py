@@ -218,6 +218,26 @@ def test_sync_that_has_never_run_is_a_warning(app, monkeypatch):
     assert state_of(status_web.card_rows(app), "New cards synced") == status_web.WARN
 
 
+def test_play_time_before_anything_has_played(app):
+    """No play_time table yet on a device that just got the update"""
+    rows = status_web.play_time_rows(app)
+    assert value_of(rows, "Played today") == "0 s"
+
+
+def test_play_time_sums_today_and_the_last_week(app):
+    import utils
+    today = datetime.date(2026, 10, 26)
+    utils.add_play_time(app.database_url, 1800, day=today)
+    utils.add_play_time(app.database_url, 600, day=today)
+    utils.add_play_time(app.database_url, 3600, day=today - datetime.timedelta(days=6))
+    utils.add_play_time(app.database_url, 9999, day=today - datetime.timedelta(days=7))
+
+    rows = status_web.play_time_rows(app, today=today)
+
+    assert value_of(rows, "Played today") == "40 min"
+    assert value_of(rows, "Played in the last 7 days") == "1 h 40 min"
+
+
 def test_database_read_never_uses_the_app_connection(app):
     """The page must open its own connection, whatever thread it runs on"""
     assert status_web.db_query(app.database_url, "SELECT 1") == [(1,)]

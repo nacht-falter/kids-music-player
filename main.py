@@ -39,6 +39,7 @@ class RFIDMusicPlayer:
         self.log_path = None
         self.player_lock = threading.Lock()
         self.last_activity = time.monotonic()
+        self.last_play_check = None
         self.activity_lock = threading.Lock()
         self.sync_done = threading.Event()
         self.db = None
@@ -228,8 +229,27 @@ class RFIDMusicPlayer:
             # Costs one request per interval, and only while idle and cardless.
             playing = spotify.device_is_playing()
 
+        now = time.monotonic()
         if playing:
             self.reset_last_activity()
+            if self.last_play_check is not None:
+                self.record_play_time(now - self.last_play_check)
+        self.last_play_check = now
+
+    def record_play_time(self, elapsed):
+        """Count the interval since the last check as played
+
+        Sampled, so each start and stop is off by up to one interval in
+        opposite directions. Capped because a check delayed by a card scan
+        holding player_lock does not mean the music played any longer.
+        """
+        seconds = min(elapsed, 2 * self.STATE_REFRESH_INTERVAL)
+        try:
+            utils.add_play_time(self.database_url, seconds)
+        except sqlite3.Error as e:
+            # Never let bookkeeping take the watchdog thread down with it:
+            # without the watchdog the device no longer switches itself off.
+            logging.warning("Could not record play time: %s", e)
 
     def start_watchdog(self):
         """Start the idle watchdog timer."""

@@ -35,8 +35,24 @@ def create_tables(db):
     );
     """)
 
+    create_play_time_table(db)
 
     db.commit()
+
+
+def create_play_time_table(db):
+    """Seconds of playback per local calendar day
+
+    Separate from create_tables because existing devices never run that:
+    create_db only fires when the database file is missing, so the player
+    creates this one itself before its first write.
+    """
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS play_time (
+        day TEXT PRIMARY KEY,
+        seconds INTEGER NOT NULL DEFAULT 0
+        );
+    """)
 
 
 def create_db(database_url):
