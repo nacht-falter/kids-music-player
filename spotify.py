@@ -365,6 +365,17 @@ class SpotifyPlayer:
         # against how much time really elapsed, which is the one measurement
         # librespot's clock cannot distort.
         self.last_good_position = None
+        # (context_uri, [track uri, ...] or None on failure, monotonic time of
+        # the fetch) - see _context_tracks().
+        self._track_list = None
+        # The track Spotify last reported for our playback, and its place in
+        # the context (0-based, None when unknown) - see _note_track().
+        self.current_track_uri = None
+        self.current_track_index = None
+        # What the next track change should land on: a URI when we named the
+        # track, True when we asked for a change without naming it, None when
+        # we asked for nothing.
+        self.expected_track = None
         logging.info("SpotifyPlayer initialized for RFID %s", rfid)
 
     def _get_headers(self):
@@ -419,6 +430,112 @@ class SpotifyPlayer:
         exact: this is what stops foreign content being adopted.
         """
         return {self.location}
+
+    # /albums/{id}/tracks pages at up to 50 (playlists allow 100).
+    TRACK_PAGE_LIMIT = 50
+
+    # How long a failed track list read is left alone, so an outage costs one
+    # attempt rather than one on every press and every status check.
+    TRACK_LIST_RETRY_SECONDS = 300
+
+    def _context_tracks(self):
+        """Track URIs of the current context in play order, or None
+
+        What lets next/previous name their destination - see _skip_by(). An
+        album or playlist only; anything else has no list to read. Fetched
+        once per context and kept: a 70-track album is two requests, fine
+        once but not on every press. Gaps (removed tracks, podcast episodes
+        with no URI) stay in as None so the positions match Spotify's.
+        """
+        context = self._context_uri() or ""
+        if self._track_list and self._track_list[0] == context:
+            _, uris, fetched_at = self._track_list
+            if (uris is not None or time.monotonic() - fetched_at
+                    < self.TRACK_LIST_RETRY_SECONDS):
+                return uris
+
+        parts = context.split(":")
+        if len(parts) != 3 or parts[1] not in ("album", "playlist"):
+            return None
+        kind, context_id = parts[1], parts[2]
+
+        url = f"{self.base_url}/{kind}s/{context_id}/tracks"
+        params = {"limit": self.TRACK_PAGE_LIMIT, "offset": 0}
+        if kind == "playlist":
+            params["fields"] = "items(track(uri)),next"
+        uris = []
+        try:
+            headers = self._get_headers()
+            while True:
+                response = _api("get", url, headers=headers, params=params)
+                response.raise_for_status()
+                page = response.json()
+                for entry in page.get("items", []):
+                    # A playlist entry wraps its track; an album entry is one.
+                    track = entry.get("track") if kind == "playlist" else entry
+                    uris.append((track or {}).get("uri"))
+                if not page.get("next"):
+                    break
+                params["offset"] += params["limit"]
+        except (requests.RequestException, ValueError) as e:
+            self.handle_exception("Reading the track list failed", e)
+            uris = None
+
+        self._track_list = (context, uris, time.monotonic())
+        return uris
+
+    @staticmethod
+    def _item_uris(item):
+        """Every URI a reported track may appear under in a track list
+
+        Spotify relinks a track that is unavailable in the account's market
+        to an equivalent one, and then reports the substitute's URI with the
+        listed one under linked_from.
+        """
+        uris = {item.get("uri"), (item.get("linked_from") or {}).get("uri")}
+        uris.discard(None)
+        return uris
+
+    def _note_track(self, playback):
+        """Log every track change, and warn about one we did not ask for
+
+        On 2026-10-26 a track on toem ended and spotifyd carried on 11 tracks
+        earlier, with no press for minutes: after a burst of next/previous,
+        what it played and what it took to come next had come apart. Only
+        spotifyd's own load lines showed it, pieced together by hand. Costs
+        no request beyond the one-off track list, as every caller already
+        has the playback payload.
+        """
+        item = playback.get("item") or {}
+        uri = item.get("uri")
+        if not uri or uri == self.current_track_uri:
+            return
+
+        previous_index = self.current_track_index
+        had_track = self.current_track_uri is not None
+        expected, self.expected_track = self.expected_track, None
+
+        tracks = self._context_tracks() or []
+        uris = self._item_uris(item)
+        index = next((i for i, listed in enumerate(tracks) if listed in uris),
+                     None)
+        self.current_track_uri = uri
+        self.current_track_index = index
+
+        number = f"{index + 1}/{len(tracks)}" if index is not None else "?"
+        logging.info("Now playing track %s: %s", number, item.get("name"))
+
+        if isinstance(expected, str):
+            if expected not in uris:
+                logging.warning(
+                    "Asked for %s, but Spotify reports track %s (%s)",
+                    expected, number, uri)
+        elif (expected is None and had_track and index is not None
+                and previous_index is not None
+                and index != previous_index + 1):
+            logging.warning(
+                "Track changed from %d to %d without a skip from us",
+                previous_index + 1, index + 1)
 
     def owns_playback(self, playback):
         """Whether the current playback is this device playing our own album
@@ -664,6 +781,7 @@ class SpotifyPlayer:
             # where the story actually is.
             if self.owns_playback(playback):
                 self.playback_state = self._state_from_playback(playback)
+                self._note_track(playback)
             return playback
         except requests.RequestException as e:
             self.handle_exception("Playback status check failed", e)
@@ -697,6 +815,7 @@ class SpotifyPlayer:
             self.playback_started = True
             self.active_device = self.device_id
             self._note_intended_position(position_ms)
+            self.expected_track = offset_sent.get("uri") or True
             logging.info(
                 "Started playback from beginning at offset %s (%d ms)",
                 offset_sent, position_ms)
@@ -784,8 +903,47 @@ class SpotifyPlayer:
         self.play()
         return False
 
+    def _skip_by(self, step):
+        """Play the neighbouring track by naming it, rather than relatively
+
+        Spotify's next/previous leave spotifyd to work out the destination
+        from its own idea of where it is in the album, and a burst of them
+        can leave that idea wrong (see _note_track()). Naming the context and
+        the track loads both afresh, so a wrong idea cannot outlive the press.
+
+        Returns False when the neighbour cannot be named - no track list, the
+        current track not in it, or the end of the context - for the caller
+        to fall back to the relative command. True once the press is spent,
+        whether or not the request succeeded.
+        """
+        tracks = self._context_tracks()
+        if not tracks or self.current_track_index is None:
+            return False
+        target = self.current_track_index + step
+        if not 0 <= target < len(tracks) or not tracks[target]:
+            return False
+
+        data = {"context_uri": self._context_uri(),
+                "offset": {"uri": tracks[target]},
+                "position_ms": 0}
+        try:
+            response = _api("put", self._device_url("play"),
+                            headers=self._get_headers(), json=data)
+            response.raise_for_status()
+            self.playing = True
+            self.playback_started = True
+            self.active_device = self.device_id
+            self._note_intended_position(0)
+            self.expected_track = tracks[target]
+            logging.info("Skipped to track %d/%d", target + 1, len(tracks))
+        except requests.RequestException as e:
+            self.handle_exception("Skipping to a track failed", e, audible=True)
+        return True
+
     def next_track(self):
         if not self.ensure_owns_playback("skipping to next track"):
+            return
+        if self._skip_by(+1):
             return
         url = self._device_url("next")
         try:
@@ -793,6 +951,7 @@ class SpotifyPlayer:
             response.raise_for_status()
             self.playing = True
             self._forget_good_position()
+            self.expected_track = True
             logging.info("Skipped to next track")
         except requests.RequestException as e:
             self.handle_exception("Next track failed", e, audible=True)
@@ -825,12 +984,15 @@ class SpotifyPlayer:
             self.restart_track()
             return
 
+        if self._skip_by(-1):
+            return
         url = self._device_url("previous")
         try:
             response = _api("post", url, headers=self._get_headers())
             response.raise_for_status()
             self.playing = True
             self._forget_good_position()
+            self.expected_track = True
             logging.info("Returned to previous track")
         except requests.RequestException as e:
             self.handle_exception("Previous track failed", e, audible=True)
@@ -844,6 +1006,7 @@ class SpotifyPlayer:
             response.raise_for_status()
             self.playing = True
             self._note_intended_position(0)
+            self.expected_track = True
             logging.info("Playback restarted from beginning")
         except requests.RequestException as e:
             self.handle_exception("Restart failed", e, audible=True)

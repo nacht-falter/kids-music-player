@@ -1397,3 +1397,258 @@ class TestSharedSession:
         """Retrying a read error could skip two tracks for one press"""
         retry = self._retry()
         assert retry.read == 0 and retry.status == 0 and retry.other == 0
+
+
+# --- skipping by naming the track, and watching where playback goes ----------
+
+class TestNamedSkips:
+    """next/previous play the neighbouring track by URI. A burst of relative
+    next/previous left spotifyd's idea of its place in the album wrong, and
+    11 tracks back was where the story carried on (toem, 2026-10-26)."""
+
+    ALBUM = "spotify:album:123"
+    TRACKS = ["spotify:track:t1", "spotify:track:t2", "spotify:track:t3"]
+
+    def _player(self, monkeypatch):
+        monkeypatch.setenv("SPOTIFY_DEVICE_ID", "test_device")
+        with patch.dict('sys.modules', {'utils': MagicMock()}):
+            from spotify import SpotifyPlayer
+            player = SpotifyPlayer("rfid123", None, self.ALBUM)
+        player.auth_manager = MagicMock()
+        player.auth_manager.get_token.return_value = "tok"
+        return player
+
+    def _status(self, track_uri, progress_ms=1000, linked_from=None):
+        status = _playback_status("test_device", self.ALBUM)
+        item = {"uri": track_uri, "name": track_uri, "duration_ms": 200000}
+        if linked_from:
+            item["linked_from"] = {"uri": linked_from}
+        status.json.return_value.update(progress_ms=progress_ms, item=item)
+        return status
+
+    def _album_page(self, uris, has_next=False):
+        page = MagicMock()
+        page.status_code = 200
+        page.json.return_value = {"items": [{"uri": u} for u in uris],
+                                  "next": "more" if has_next else None}
+        return page
+
+    def _get(self, status, pages=None):
+        """GET that answers /me/player with status, track lists with pages"""
+        pages = list(pages if pages is not None
+                     else [self._album_page(self.TRACKS)])
+
+        def get(url, **kwargs):
+            if url.endswith("/tracks"):
+                return pages.pop(0)
+            return status
+        return MagicMock(side_effect=get)
+
+    def test_next_names_the_following_track(self, monkeypatch):
+        player = self._player(monkeypatch)
+        with patch("spotify._session.get",
+                   self._get(self._status(self.TRACKS[1]))), \
+                patch("spotify._session.put") as put, \
+                patch("spotify._session.post") as post:
+            player.next_track()
+
+        post.assert_not_called()
+        assert put.call_args.kwargs["json"] == {
+            "context_uri": self.ALBUM,
+            "offset": {"uri": self.TRACKS[2]},
+            "position_ms": 0}
+        assert player.expected_track == self.TRACKS[2]
+
+    def test_previous_names_the_preceding_track(self, monkeypatch):
+        player = self._player(monkeypatch)
+        with patch("spotify._session.get",
+                   self._get(self._status(self.TRACKS[1]))), \
+                patch("spotify._session.put") as put, \
+                patch("spotify._session.post") as post:
+            player.previous_track()
+
+        post.assert_not_called()
+        assert put.call_args.kwargs["json"]["offset"] == {"uri": self.TRACKS[0]}
+
+    def test_previous_past_the_threshold_still_restarts(self, monkeypatch):
+        player = self._player(monkeypatch)
+        with patch("spotify._session.get",
+                   self._get(self._status(self.TRACKS[1], progress_ms=45000))), \
+                patch("spotify._session.put") as put:
+            player.previous_track()
+
+        assert "seek" in put.call_args.args[0]
+
+    def test_the_end_of_the_album_falls_back_to_spotify(self, monkeypatch):
+        """No neighbour to name: keep whatever Spotify does at the end"""
+        player = self._player(monkeypatch)
+        with patch("spotify._session.get",
+                   self._get(self._status(self.TRACKS[2]))), \
+                patch("spotify._session.put") as put, \
+                patch("spotify._session.post") as post:
+            player.next_track()
+
+        put.assert_not_called()
+        assert post.call_args.args[0].split("?")[0].endswith("/next")
+
+    def test_an_unknown_track_falls_back_to_spotify(self, monkeypatch):
+        player = self._player(monkeypatch)
+        with patch("spotify._session.get",
+                   self._get(self._status("spotify:track:elsewhere"))), \
+                patch("spotify._session.put") as put, \
+                patch("spotify._session.post") as post:
+            player.next_track()
+
+        put.assert_not_called()
+        post.assert_called_once()
+
+    def test_an_unreadable_track_list_falls_back_to_spotify(self, monkeypatch):
+        player = self._player(monkeypatch)
+        failing = MagicMock()
+        failing.raise_for_status.side_effect = requests.HTTPError("500")
+        with patch("spotify._session.get",
+                   self._get(self._status(self.TRACKS[1]), pages=[failing])), \
+                patch("spotify._session.put") as put, \
+                patch("spotify._session.post") as post:
+            player.next_track()
+
+        put.assert_not_called()
+        post.assert_called_once()
+
+    def test_a_failed_track_list_is_retried_only_later(self, monkeypatch):
+        player = self._player(monkeypatch)
+        failing = MagicMock()
+        failing.raise_for_status.side_effect = requests.HTTPError("500")
+        get = MagicMock(side_effect=[failing, self._album_page(self.TRACKS)])
+        with patch("spotify._session.get", get), \
+                patch("spotify.time.monotonic", return_value=1000.0):
+            assert player._context_tracks() is None
+            assert player._context_tracks() is None
+        assert get.call_count == 1
+
+        with patch("spotify._session.get", get), \
+                patch("spotify.time.monotonic", return_value=1301.0):
+            assert player._context_tracks() == self.TRACKS
+
+    def test_a_failed_named_skip_is_not_repeated_relatively(self, monkeypatch):
+        """One press, one action - a fallback after a failure would be two"""
+        player = self._player(monkeypatch)
+        with patch("spotify._session.get",
+                   self._get(self._status(self.TRACKS[1]))), \
+                patch("spotify._session.put",
+                      side_effect=requests.ConnectionError("down")), \
+                patch("spotify._session.post") as post:
+            player.next_track()
+
+        post.assert_not_called()
+
+    def test_the_track_list_is_paged_and_read_once(self, monkeypatch):
+        player = self._player(monkeypatch)
+        get = self._get(self._status(self.TRACKS[1]), pages=[
+            self._album_page(self.TRACKS[:2], has_next=True),
+            self._album_page(self.TRACKS[2:])])
+        with patch("spotify._session.get", get), \
+                patch("spotify._session.put"):
+            player.next_track()
+            player.next_track()
+
+        track_calls = [c for c in get.call_args_list
+                       if c.args[0].endswith("/tracks")]
+        assert len(track_calls) == 2
+        assert track_calls[1].kwargs["params"]["offset"] == 50
+        assert player._track_list[:2] == (self.ALBUM, self.TRACKS)
+
+    def test_a_relinked_track_is_found_by_its_listed_uri(self, monkeypatch):
+        player = self._player(monkeypatch)
+        status = self._status("spotify:track:substitute",
+                              linked_from=self.TRACKS[0])
+        with patch("spotify._session.get", self._get(status)), \
+                patch("spotify._session.put") as put:
+            player.next_track()
+
+        assert put.call_args.kwargs["json"]["offset"] == {"uri": self.TRACKS[1]}
+
+    def test_a_playlist_reads_tracks_out_of_their_entries(self, monkeypatch):
+        player = self._player(monkeypatch)
+        player.location = "spotify:playlist:p1"
+        page = MagicMock()
+        page.json.return_value = {
+            "items": [{"track": {"uri": u}} for u in self.TRACKS]
+            + [{"track": None}],
+            "next": None}
+        with patch("spotify._session.get", return_value=page) as get:
+            tracks = player._context_tracks()
+
+        assert tracks == self.TRACKS + [None]
+        assert get.call_args.args[0].endswith("/playlists/p1/tracks")
+
+    def test_other_contexts_have_no_track_list(self, monkeypatch):
+        player = self._player(monkeypatch)
+        player.location = "spotify:artist:a1"
+        with patch("spotify._session.get") as get:
+            assert player._context_tracks() is None
+        get.assert_not_called()
+
+
+class TestTrackChangeLog:
+    ALBUM = TestNamedSkips.ALBUM
+    TRACKS = TestNamedSkips.TRACKS
+
+    def _player(self, monkeypatch):
+        player = TestNamedSkips()._player(monkeypatch)
+        player._track_list = (self.ALBUM, list(self.TRACKS), 0.0)
+        return player
+
+    def _see(self, player, track_uri):
+        player._note_track({"item": {"uri": track_uri, "name": track_uri}})
+
+    def test_every_change_is_logged_with_its_number(self, monkeypatch, caplog):
+        caplog.set_level("INFO")
+        player = self._player(monkeypatch)
+        self._see(player, self.TRACKS[0])
+        self._see(player, self.TRACKS[0])
+        self._see(player, self.TRACKS[1])
+
+        lines = [r.message for r in caplog.records
+                 if r.message.startswith("Now playing")]
+        assert lines == ["Now playing track 1/3: spotify:track:t1",
+                         "Now playing track 2/3: spotify:track:t2"]
+
+    def test_a_jump_nobody_asked_for_is_a_warning(self, monkeypatch, caplog):
+        player = self._player(monkeypatch)
+        self._see(player, self.TRACKS[2])
+        self._see(player, self.TRACKS[0])
+
+        assert "Track changed from 3 to 1 without a skip from us" in caplog.text
+
+    def test_a_track_ending_into_the_next_is_no_jump(self, monkeypatch, caplog):
+        player = self._player(monkeypatch)
+        self._see(player, self.TRACKS[0])
+        self._see(player, self.TRACKS[1])
+
+        assert "WARNING" not in caplog.text
+
+    def test_a_requested_change_is_no_jump(self, monkeypatch, caplog):
+        player = self._player(monkeypatch)
+        self._see(player, self.TRACKS[2])
+        player.expected_track = True
+        self._see(player, self.TRACKS[0])
+
+        assert "WARNING" not in caplog.text
+        assert player.expected_track is None
+
+    def test_landing_somewhere_else_than_named_is_a_warning(
+            self, monkeypatch, caplog):
+        player = self._player(monkeypatch)
+        self._see(player, self.TRACKS[0])
+        player.expected_track = self.TRACKS[1]
+        self._see(player, self.TRACKS[2])
+
+        assert "Asked for spotify:track:t2, but Spotify reports track 3/3" \
+            in caplog.text
+
+    def test_the_first_track_seen_is_no_jump(self, monkeypatch, caplog):
+        player = self._player(monkeypatch)
+        self._see(player, self.TRACKS[2])
+
+        assert "WARNING" not in caplog.text
