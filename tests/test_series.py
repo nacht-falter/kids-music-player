@@ -50,7 +50,7 @@ class TestEpisodeMap:
         with patch.object(spotify.SpotifySeriesPlayer, "_load_episodes",
                           return_value=[]):
             player = spotify.SpotifySeriesPlayer("rfid1", None, PLAYLIST)
-        with patch("spotify.requests.get", side_effect=pages):
+        with patch("spotify._session.get", side_effect=pages):
             return player._fetch_episodes()
 
     def test_consecutive_tracks_of_one_album_are_one_episode(self):

@@ -9,6 +9,7 @@ import time
 import urllib.parse
 
 import requests
+import urllib3
 
 import utils
 
@@ -47,17 +48,45 @@ def _timed_getaddrinfo(*args, **kwargs):
 socket.getaddrinfo = _timed_getaddrinfo
 
 
-def _api(verb, url, **kwargs):
-    """requests.<verb>(url, ...) with a timeout, logging it when slow
+def _make_session():
+    """One connection pool for every Spotify call, kept open between them
 
-    The function is looked up on each call rather than bound at import, so
-    tests that patch spotify.requests.get and friends keep working.
+    A fresh connection per request paid a DNS lookup, TCP and TLS each time:
+    measured on toem 2026-10-26, GET /me/player took 0.254s median that way
+    against 0.106s over a reused connection, and the lookups were what hit
+    the 5s DNS stalls (DNS 5.1s of a 5.3s call, five times in two minutes).
+    A play/pause makes two calls, so it gains on both counts.
+
+    Shared across threads (the press worker, card scans, the refresh loop):
+    urllib3's pool hands each concurrent request its own connection, and
+    nothing here changes session state after creation.
+
+    A pooled connection can be closed by Spotify while idle. Retrying once on
+    a connect error covers reopening it, and is safe for every verb - next
+    included - because a connect error means the request was never sent.
+    Read errors are not retried: a POST /next might already have happened.
+    """
+    retry = urllib3.util.Retry(
+        total=1, connect=1, read=0, status=0, redirect=0, other=0)
+    session = requests.Session()
+    session.mount("https://", requests.adapters.HTTPAdapter(max_retries=retry))
+    return session
+
+
+_session = _make_session()
+
+
+def _api(verb, url, **kwargs):
+    """_session.<verb>(url, ...) with a timeout, logging it when slow
+
+    The method is looked up on each call rather than bound at import, so
+    tests can patch spotify._session.get and friends.
     """
     kwargs.setdefault("timeout", API_TIMEOUT)
     _dns_time.seconds = 0.0
     start = time.monotonic()
     try:
-        return getattr(requests, verb)(url, **kwargs)
+        return getattr(_session, verb)(url, **kwargs)
     finally:
         elapsed = time.monotonic() - start
         if elapsed > SLOW_CALL_SECONDS:

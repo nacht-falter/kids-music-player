@@ -290,7 +290,7 @@ class TestTogglingWithNoPlayer:
 
         with patch.object(player, "_device_url", return_value="http://x"), \
                 patch.object(player, "_get_headers", return_value={}), \
-                patch("spotify.requests.put", return_value=MagicMock(
+                patch("spotify._session.put", return_value=MagicMock(
                     raise_for_status=MagicMock(return_value=None))):
             player.pause_playback()
 

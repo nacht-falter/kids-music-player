@@ -76,7 +76,7 @@ def test_spotify_auth_manager_get_token_success(monkeypatch):
             "expires_in": 3600
         }
         mock_response.raise_for_status.return_value = None
-        with patch('spotify.requests.post', return_value=mock_response):
+        with patch('spotify._session.post', return_value=mock_response):
             token = auth_manager.get_token()
             assert token == "new_token"
 
@@ -90,7 +90,7 @@ def test_spotify_auth_manager_token_refresh_failure(monkeypatch):
         auth_manager = SpotifyAuthManager()
         
         # Mock only the post method with the correct exception type
-        with patch('spotify.requests.post', side_effect=requests.RequestException("Network error")), \
+        with patch('spotify._session.post', side_effect=requests.RequestException("Network error")), \
                 patch('spotify.time.sleep') as mock_sleep:
             token = auth_manager.get_token()
             assert token is None
@@ -145,7 +145,7 @@ def test_spotify_player_transfer_playback_success(monkeypatch):
         # Mock only the put method
         mock_response = MagicMock()
         mock_response.raise_for_status.return_value = None
-        with patch('spotify.requests.put', return_value=mock_response):
+        with patch('spotify._session.put', return_value=mock_response):
             result = player.transfer_playback(play=False)
             assert result is True
 
@@ -159,7 +159,7 @@ def test_spotify_player_transfer_playback_failure(monkeypatch):
         player = SpotifyPlayer("rfid123", None, "spotify:album:123")
         
         # Mock only the put method with the correct exception type
-        with patch('spotify.requests.put', side_effect=requests.RequestException("Network error")):
+        with patch('spotify._session.put', side_effect=requests.RequestException("Network error")):
             result = player.transfer_playback(play=False)
             assert result is False
 
@@ -203,7 +203,7 @@ def test_spotify_player_play_success(monkeypatch):
         # Mock only the put method
         mock_response = MagicMock()
         mock_response.raise_for_status.return_value = None
-        with patch('spotify.requests.put', return_value=mock_response), \
+        with patch('spotify._session.put', return_value=mock_response), \
              patch('spotify.utils.play_sound'):
             player.play()
             assert player.playing is True
@@ -220,7 +220,7 @@ def test_spotify_player_play_failure(monkeypatch):
         player = SpotifyPlayer("rfid123", None, "spotify:album:123")
         
         # Mock only the put method with the correct exception type
-        with patch('spotify.requests.put', side_effect=requests.RequestException("Network error")), \
+        with patch('spotify._session.put', side_effect=requests.RequestException("Network error")), \
              patch('spotify.utils.play_sound') as mock_sound:
             player.play()
             mock_sound.assert_called_with("playback_error")
@@ -235,10 +235,13 @@ def test_spotify_player_toggle_playback_playing_to_pause(monkeypatch):
         player = SpotifyPlayer("rfid123", None, "spotify:album:123")
         player.playing = True
         
-        # Mock only the put method
         mock_response = MagicMock()
         mock_response.raise_for_status.return_value = None
-        with patch('spotify.requests.put', return_value=mock_response):
+        # The status check is mocked too: unpatched, it reached the real API
+        # with a fake token and only passed because the 401 was swallowed.
+        status = _playback_status("test_device", "spotify:album:123", True)
+        with patch('spotify._session.get', return_value=status), \
+                patch('spotify._session.put', return_value=mock_response):
             player.toggle_playback()
             assert player.playing is False
 
@@ -252,10 +255,11 @@ def test_spotify_player_toggle_playback_paused_to_resume(monkeypatch):
         player = SpotifyPlayer("rfid123", None, "spotify:album:123")
         player.playing = False
         
-        # Mock only the put method
         mock_response = MagicMock()
         mock_response.raise_for_status.return_value = None
-        with patch('spotify.requests.put', return_value=mock_response):
+        status = _playback_status("test_device", "spotify:album:123", False)
+        with patch('spotify._session.get', return_value=status), \
+                patch('spotify._session.put', return_value=mock_response):
             player.toggle_playback()
             assert player.playing is True
 
@@ -284,8 +288,8 @@ def test_spotify_player_next_track_success(monkeypatch):
         # too - our device, playing our album.
         status = _playback_status("test_device", "spotify:album:123")
         with patch.object(player.auth_manager, "get_token", return_value="tok"), \
-                patch('spotify.requests.get', return_value=status), \
-                patch('spotify.requests.post') as mock_post:
+                patch('spotify._session.get', return_value=status), \
+                patch('spotify._session.post') as mock_post:
             player.next_track()
             mock_post.assert_called_once()
             assert player.playing
@@ -302,9 +306,9 @@ def test_spotify_player_next_track_reclaims_when_not_ours(monkeypatch):
 
         status = _playback_status("other_device", "spotify:album:999")
         with patch.object(player.auth_manager, "get_token", return_value="tok"), \
-                patch('spotify.requests.get', return_value=status), \
-                patch('spotify.requests.put') as mock_put, \
-                patch('spotify.requests.post') as mock_post:
+                patch('spotify._session.get', return_value=status), \
+                patch('spotify._session.put') as mock_put, \
+                patch('spotify._session.post') as mock_post:
             player.next_track()
             # No skip issued against the foreign session ...
             mock_post.assert_not_called()
@@ -325,8 +329,8 @@ def test_spotify_player_toggle_does_not_inherit_foreign_content(monkeypatch):
         status = _playback_status(
             "test_device", "spotify:show:podcast", is_playing=False)
         with patch.object(player.auth_manager, "get_token", return_value="tok"), \
-                patch('spotify.requests.get', return_value=status), \
-                patch('spotify.requests.put') as mock_put:
+                patch('spotify._session.get', return_value=status), \
+                patch('spotify._session.put') as mock_put:
             player.toggle_playback()
             # play() with our context, never a context-less resume.
             mock_put.assert_called_once()
@@ -368,7 +372,7 @@ def test_spotify_player_tracks_position_while_playing(monkeypatch):
         status.json.return_value["item"] = {"uri": "spotify:track:x",
                                             "track_number": 2}
         with patch.object(player.auth_manager, "get_token", return_value="tok"), \
-                patch('spotify.requests.get', return_value=status):
+                patch('spotify._session.get', return_value=status):
             player.check_playback_status()
 
         assert player.playback_state == {
@@ -389,14 +393,14 @@ def test_spotify_player_reclaim_uses_fresh_position(monkeypatch):
         ours.json.return_value["item"] = {"uri": "spotify:track:x",
                                           "track_number": 2}
         with patch.object(player.auth_manager, "get_token", return_value="tok"), \
-                patch('spotify.requests.get', return_value=ours):
+                patch('spotify._session.get', return_value=ours):
             player.refresh_playback_state()
 
         # A phone then takes the session and plays a standalone track.
         foreign = _playback_status("phone", None)
         with patch.object(player.auth_manager, "get_token", return_value="tok"), \
-                patch('spotify.requests.get', return_value=foreign), \
-                patch('spotify.requests.put') as mock_put:
+                patch('spotify._session.get', return_value=foreign), \
+                patch('spotify._session.put') as mock_put:
             player.toggle_playback()
 
         sent = mock_put.call_args.kwargs["json"]
@@ -433,15 +437,15 @@ def test_reclaim_on_a_playlist_follows_the_real_track_not_a_frozen_one(monkeypat
             status.json.return_value["progress_ms"] = progress
             status.json.return_value["item"] = {"uri": uri}
             with patch.object(player.auth_manager, "get_token", return_value="tok"), \
-                    patch('spotify.requests.get', return_value=status):
+                    patch('spotify._session.get', return_value=status):
                 player.refresh_playback_state()
 
         # Something interrupts us - a dropped connection, a takeover - and a
         # button press has to reclaim.
         foreign = _playback_status("phone", None)
         with patch.object(player.auth_manager, "get_token", return_value="tok"), \
-                patch('spotify.requests.get', return_value=foreign), \
-                patch('spotify.requests.put') as mock_put:
+                patch('spotify._session.get', return_value=foreign), \
+                patch('spotify._session.put') as mock_put:
             player.toggle_playback()
 
         sent = mock_put.call_args.kwargs["json"]
@@ -461,7 +465,7 @@ def test_play_falls_back_to_a_position_when_no_uri_was_saved(monkeypatch):
         player = SpotifyPlayer("rfid123", old_format, "spotify:album:123")
 
         with patch.object(player.auth_manager, "get_token", return_value="tok"), \
-                patch('spotify.requests.put') as mock_put:
+                patch('spotify._session.put') as mock_put:
             player.play()
 
         sent = mock_put.call_args.kwargs["json"]
@@ -481,7 +485,7 @@ def test_save_playback_state_falls_back_when_not_ours(monkeypatch):
         # A phone has taken the session and plays something else.
         foreign = _playback_status("phone", "spotify:album:999")
         with patch.object(player.auth_manager, "get_token", return_value="tok"), \
-                patch('spotify.requests.get', return_value=foreign), \
+                patch('spotify._session.get', return_value=foreign), \
                 patch("spotify.utils.persist_playback_state") as mock_persist:
             player.save_playback_state()
 
@@ -504,7 +508,7 @@ def test_refresh_playback_state_skips_unchanged(monkeypatch):
         status.json.return_value["item"] = {"uri": "spotify:track:x",
                                             "track_number": 1}
         with patch.object(player.auth_manager, "get_token", return_value="tok"), \
-                patch('spotify.requests.get', return_value=status), \
+                patch('spotify._session.get', return_value=status), \
                 patch("spotify.utils.persist_playback_state") as mock_persist:
             assert player.refresh_playback_state() is True   # first: changed
             assert player.refresh_playback_state() is False  # second: identical
@@ -529,7 +533,7 @@ def test_invalid_grant_is_not_retried(monkeypatch):
         am = SpotifyAuthManager()
         resp = _token_error(400, '{"error":"invalid_grant",'
                                  '"error_description":"Refresh token revoked"}')
-        with patch('spotify.requests.post', return_value=resp) as mock_post, \
+        with patch('spotify._session.post', return_value=resp) as mock_post, \
                 patch('spotify.time.sleep') as mock_sleep:
             assert am.get_token() is None
             mock_post.assert_called_once()      # not three times
@@ -542,7 +546,7 @@ def test_transient_failure_is_still_retried(monkeypatch):
     with patch.dict('sys.modules', {'utils': MagicMock()}):
         from spotify import SpotifyAuthManager
         am = SpotifyAuthManager()
-        with patch('spotify.requests.post',
+        with patch('spotify._session.post',
                    side_effect=requests.RequestException("boom")) as mock_post, \
                 patch('spotify.time.sleep'):
             assert am.get_token() is None
@@ -561,7 +565,7 @@ def test_missing_token_raises_instead_of_bearer_none(monkeypatch):
                 player._get_headers()
 
             # And it is handled, not crashing, by the normal call paths.
-            with patch('spotify.requests.get') as mock_get:
+            with patch('spotify._session.get') as mock_get:
                 assert player.check_playback_status() is None
                 mock_get.assert_not_called()
 
@@ -574,7 +578,7 @@ def test_rejected_credentials_are_not_re_requested(monkeypatch):
         from spotify import SpotifyAuthManager
         am = SpotifyAuthManager()
         resp = _token_error(400, '{"error":"invalid_grant"}')
-        with patch('spotify.requests.post', return_value=resp) as mock_post:
+        with patch('spotify._session.post', return_value=resp) as mock_post:
             for _ in range(10):
                 assert am.get_token() is None
             mock_post.assert_called_once()
@@ -587,7 +591,7 @@ def test_cooldown_expires_and_recovery_clears_it(monkeypatch):
         from spotify import SpotifyAuthManager
         am = SpotifyAuthManager()
         bad = _token_error(400, '{"error":"invalid_grant"}')
-        with patch('spotify.requests.post', return_value=bad):
+        with patch('spotify._session.post', return_value=bad):
             assert am.get_token() is None
         assert am.rejected_at
 
@@ -597,7 +601,7 @@ def test_cooldown_expires_and_recovery_clears_it(monkeypatch):
         good.status_code = 200
         good.json.return_value = {"access_token": "fresh", "expires_in": 3600}
         good.raise_for_status.return_value = None
-        with patch('spotify.requests.post', return_value=good):
+        with patch('spotify._session.post', return_value=good):
             assert am.get_token() == "fresh"
         assert am.rejected_at == 0
 
@@ -662,7 +666,7 @@ def test_restart_failure_is_audible(monkeypatch):
 
         with patch.object(player.auth_manager, "get_token", return_value="tok"), \
                 patch("spotify.utils", fake_utils), \
-                patch('spotify.requests.put',
+                patch('spotify._session.put',
                       side_effect=requests.RequestException("404")):
             player.restart_playback()
 
@@ -677,7 +681,7 @@ def test_resume_failure_is_audible(monkeypatch):
 
         with patch.object(player.auth_manager, "get_token", return_value="tok"), \
                 patch("spotify.utils", fake_utils), \
-                patch('spotify.requests.put',
+                patch('spotify._session.put',
                       side_effect=requests.RequestException("boom")):
             player.resume_playback()
 
@@ -752,7 +756,7 @@ def test_device_is_playing_true_for_our_device(monkeypatch):
     monkeypatch.setenv("SPOTIFY_DEVICE_ID", "ours")
     import spotify
     with patch.object(spotify, "get_auth_manager") as am, \
-            patch("spotify.requests.get", return_value=_player_response("ours", True)):
+            patch("spotify._session.get", return_value=_player_response("ours", True)):
         am.return_value.get_token.return_value = "tok"
         assert spotify.device_is_playing() is True
 
@@ -761,7 +765,7 @@ def test_device_is_playing_false_when_another_device_plays(monkeypatch):
     monkeypatch.setenv("SPOTIFY_DEVICE_ID", "ours")
     import spotify
     with patch.object(spotify, "get_auth_manager") as am, \
-            patch("spotify.requests.get", return_value=_player_response("phone", True)):
+            patch("spotify._session.get", return_value=_player_response("phone", True)):
         am.return_value.get_token.return_value = "tok"
         assert spotify.device_is_playing() is False
 
@@ -769,7 +773,7 @@ def test_device_is_playing_false_when_paused(monkeypatch):
     monkeypatch.setenv("SPOTIFY_DEVICE_ID", "ours")
     import spotify
     with patch.object(spotify, "get_auth_manager") as am, \
-            patch("spotify.requests.get", return_value=_player_response("ours", False)):
+            patch("spotify._session.get", return_value=_player_response("ours", False)):
         am.return_value.get_token.return_value = "tok"
         assert spotify.device_is_playing() is False
 
@@ -780,13 +784,13 @@ def test_device_is_playing_fails_closed(monkeypatch):
 
     # 204: nothing playing anywhere
     with patch.object(spotify, "get_auth_manager") as am, \
-            patch("spotify.requests.get", return_value=MagicMock(status_code=204)):
+            patch("spotify._session.get", return_value=MagicMock(status_code=204)):
         am.return_value.get_token.return_value = "tok"
         assert spotify.device_is_playing() is False
 
     # network error
     with patch.object(spotify, "get_auth_manager") as am, \
-            patch("spotify.requests.get",
+            patch("spotify._session.get",
                   side_effect=requests.RequestException("down")):
         am.return_value.get_token.return_value = "tok"
         assert spotify.device_is_playing() is False
@@ -813,9 +817,9 @@ def test_previous_restarts_the_track_when_past_the_threshold(monkeypatch):
         status.json.return_value["item"] = {"uri": "spotify:track:x",
                                             "track_number": 2}
         with patch.object(player.auth_manager, "get_token", return_value="tok"), \
-                patch('spotify.requests.get', return_value=status), \
-                patch('spotify.requests.put') as mock_put, \
-                patch('spotify.requests.post') as mock_post:
+                patch('spotify._session.get', return_value=status), \
+                patch('spotify._session.put') as mock_put, \
+                patch('spotify._session.post') as mock_post:
             player.previous_track()
 
         mock_post.assert_not_called()          # did not skip back
@@ -833,8 +837,8 @@ def test_previous_skips_back_near_the_start(monkeypatch):
         status.json.return_value["item"] = {"uri": "spotify:track:x",
                                             "track_number": 2}
         with patch.object(player.auth_manager, "get_token", return_value="tok"), \
-                patch('spotify.requests.get', return_value=status), \
-                patch('spotify.requests.post') as mock_post:
+                patch('spotify._session.get', return_value=status), \
+                patch('spotify._session.post') as mock_post:
             player.previous_track()
 
         mock_post.assert_called_once()
@@ -1124,7 +1128,7 @@ class TestPositionDriftAgainstMonotonic:
         player.ensure_owns_playback = lambda action: True
         self._anchor(player, 30000)
 
-        with patch("spotify.requests.post") as post:
+        with patch("spotify._session.post") as post:
             post.return_value = MagicMock(raise_for_status=lambda: None)
             player.next_track()
 
@@ -1147,7 +1151,7 @@ class TestPositionDriftAgainstMonotonic:
         player.playback_state = {"offset": {"position": 0},
                                  "position_ms": 45000}
 
-        with patch("spotify.requests.put") as put, \
+        with patch("spotify._session.put") as put, \
                 patch("spotify.time.monotonic", return_value=2000.0):
             put.return_value = MagicMock(raise_for_status=lambda: None)
             player.play()
@@ -1274,8 +1278,8 @@ class TestResumeNeedsAContextWeLoaded:
         player.playback_state = {"offset": {"position": 0}, "position_ms": 0}
         with patch.object(player.auth_manager, "get_token", return_value="tok"), \
                 patch("spotify.utils", MagicMock()), \
-                patch("spotify.requests.get") as got, \
-                patch("spotify.requests.put") as put:
+                patch("spotify._session.get") as got, \
+                patch("spotify._session.put") as put:
             got.return_value = MagicMock(
                 status_code=200, raise_for_status=lambda: None,
                 json=lambda: self.playback())
@@ -1307,12 +1311,12 @@ class TestApiWrapper:
     """
 
     def test_a_timeout_is_always_passed(self):
-        with patch("spotify.requests.get") as get:
+        with patch("spotify._session.get") as get:
             spotify._api("get", "https://api.spotify.com/v1/me/player")
         assert get.call_args.kwargs["timeout"] == spotify.API_TIMEOUT
 
     def test_an_explicit_timeout_is_kept(self):
-        with patch("spotify.requests.put") as put:
+        with patch("spotify._session.put") as put:
             spotify._api("put", "https://x/y", timeout=1)
         assert put.call_args.kwargs["timeout"] == 1
 
@@ -1324,7 +1328,7 @@ class TestApiWrapper:
         assert not re.search(r"requests\.(get|post|put|delete)\(", source)
 
     def test_a_fast_call_logs_nothing(self, caplog):
-        with patch("spotify.requests.get"), \
+        with patch("spotify._session.get"), \
                 patch("spotify.time.monotonic", side_effect=[100.0, 100.5]):
             spotify._api("get", "https://api.spotify.com/v1/me/player")
         assert "Slow Spotify call" not in caplog.text
@@ -1334,7 +1338,7 @@ class TestApiWrapper:
             spotify._dns_time.seconds += 5.0
             return MagicMock()
 
-        with patch("spotify.requests.post", side_effect=slow_dns_then_answer), \
+        with patch("spotify._session.post", side_effect=slow_dns_then_answer), \
                 patch("spotify.time.monotonic", side_effect=[100.0, 105.8]):
             spotify._api("post",
                          "https://api.spotify.com/v1/me/player/previous?x=1")
@@ -1343,7 +1347,7 @@ class TestApiWrapper:
                 "(DNS 5.0s, rest 0.8s)") in caplog.text
 
     def test_a_slow_failure_is_logged_and_still_raised(self, caplog):
-        with patch("spotify.requests.get",
+        with patch("spotify._session.get",
                    side_effect=requests.Timeout("read timed out")), \
                 patch("spotify.time.monotonic", side_effect=[100.0, 110.0]):
             with pytest.raises(requests.Timeout):
@@ -1352,7 +1356,7 @@ class TestApiWrapper:
 
     def test_dns_time_does_not_leak_into_the_next_call(self, caplog):
         spotify._dns_time.seconds = 9.0
-        with patch("spotify.requests.get"), \
+        with patch("spotify._session.get"), \
                 patch("spotify.time.monotonic", side_effect=[100.0, 103.0]):
             spotify._api("get", "https://api.spotify.com/v1/me/player")
         assert "(DNS 0.0s, rest 3.0s)" in caplog.text
@@ -1365,3 +1369,31 @@ class TestApiWrapper:
             assert socket.getaddrinfo("api.spotify.com", 443) == ["addr"]
         real.assert_called_once_with("api.spotify.com", 443)
         assert spotify._dns_time.seconds == 0.25
+
+
+class TestSharedSession:
+    """All calls share one keep-alive session instead of reconnecting
+
+    A fresh connection per call paid DNS, TCP and TLS every time, and the DNS
+    lookups were what produced toem's 5s stalls.
+    """
+
+    def test_calls_go_through_the_shared_session(self):
+        with patch("spotify._session.get") as get, \
+                patch("spotify.requests.get") as bare_get:
+            spotify._api("get", "https://api.spotify.com/v1/me/player")
+            spotify._api("get", "https://api.spotify.com/v1/me/player")
+        assert get.call_count == 2
+        bare_get.assert_not_called()
+
+    def _retry(self):
+        return spotify._session.get_adapter("https://api.spotify.com").max_retries
+
+    def test_a_dead_pooled_connection_is_reopened_once(self):
+        retry = self._retry()
+        assert retry.connect == 1 and retry.total == 1
+
+    def test_a_request_that_may_have_been_sent_is_never_retried(self):
+        """Retrying a read error could skip two tracks for one press"""
+        retry = self._retry()
+        assert retry.read == 0 and retry.status == 0 and retry.other == 0
