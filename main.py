@@ -91,9 +91,12 @@ class RFIDMusicPlayer:
         idle_time_env = os.environ.get("IDLE_TIME")
         self.idle_time = int(idle_time_env) if idle_time_env else 3600
 
-        # Surface an approaching refresh-token expiry while it is still
-        # cheap to fix, rather than when playback stops.
-        spotify.check_refresh_token_age()
+        if utils.spotify_configured():
+            # Surface an approaching refresh-token expiry while it is still
+            # cheap to fix, rather than when playback stops.
+            spotify.check_refresh_token_age()
+        else:
+            logging.info("No Spotify configured: local playback only")
 
         return True
 

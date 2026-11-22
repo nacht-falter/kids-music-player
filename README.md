@@ -318,7 +318,12 @@ python setup_env.py
 ```
 
 #### Option B: Manual Configuration
-Alternatively, create a `.env` file manually in the project root:
+Alternatively, create a `.env` file manually in the project root.
+
+The three `SPOTIFY_*` keys go together: set all of them, or leave all of them out
+for a device that plays local files through mpd only. A partial set is rejected
+at startup rather than read as local-only. On a local-only device, Spotify cards
+fail immediately with a `playback_error` sound.
 
 ```env
 SPOTIFY_USERCREDS=base64_clientid_clientsecret

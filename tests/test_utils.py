@@ -613,3 +613,52 @@ def test_without_the_flag_it_really_shuts_down(monkeypatch):
     with patch("utils.play_sound"), patch("utils.os.system") as system:
         shutdown(MagicMock())
     system.assert_called_once()
+
+
+LOCAL_ONLY = {"DATABASE_URL": "x", "RFID_READER": "x"}
+
+
+def test_verify_env_file_accepts_a_local_only_device():
+    """No Spotify keys at all: a box that plays mpd only, like toem3"""
+    verify_env_file(dict(LOCAL_ONLY))
+
+
+def test_verify_env_file_rejects_a_partial_spotify_setup():
+    """Some keys is a half-edited .env, not a local-only device
+
+    Accepting it would turn a typo into every Spotify card failing quietly.
+    """
+    config = dict(LOCAL_ONLY, SPOTIFY_USERCREDS="x", SPOTIFY_DEVICE_ID="x")
+    with pytest.raises(ValueError, match="SPOTIFY_REFRESH_TOKEN"):
+        verify_env_file(config)
+
+
+def test_spotify_configured_needs_every_key():
+    from utils import spotify_configured
+    full = {"SPOTIFY_USERCREDS": "x", "SPOTIFY_REFRESH_TOKEN": "x",
+            "SPOTIFY_DEVICE_ID": "x"}
+    assert spotify_configured(full)
+    assert not spotify_configured({})
+    assert not spotify_configured(dict(full, SPOTIFY_DEVICE_ID=""))
+
+
+@pytest.mark.parametrize("source", ["spotify", "spotify_series"])
+def test_spotify_card_on_a_local_only_device_fails_at_once(monkeypatch, source):
+    """No ten retries against credentials that do not exist"""
+    for key in ("SPOTIFY_USERCREDS", "SPOTIFY_REFRESH_TOKEN", "SPOTIFY_DEVICE_ID"):
+        monkeypatch.delenv(key, raising=False)
+    with patch("spotify.SpotifyPlayer") as player_class, \
+         patch("time.sleep") as sleep:
+        player = create_player({"rfid": "1", "source": source,
+                                "location": "spotify:album:x"})
+    assert player is None
+    player_class.assert_not_called()
+    sleep.assert_not_called()
+
+
+def test_local_card_on_a_local_only_device_still_plays(monkeypatch):
+    for key in ("SPOTIFY_USERCREDS", "SPOTIFY_REFRESH_TOKEN", "SPOTIFY_DEVICE_ID"):
+        monkeypatch.delenv(key, raising=False)
+    from local import AudioPlayer
+    player = create_player({"rfid": "1", "source": "local", "location": "Album"})
+    assert isinstance(player, AudioPlayer)

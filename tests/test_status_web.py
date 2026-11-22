@@ -371,3 +371,37 @@ def test_only_a_manual_refresh_counts_as_activity(app):
 def test_port_zero_switches_the_page_off(app, monkeypatch):
     monkeypatch.setenv("STATUS_PORT", "0")
     assert status_web.start(app) is None
+
+
+@pytest.fixture
+def local_only(monkeypatch):
+    for key in ("SPOTIFY_USERCREDS", "SPOTIFY_REFRESH_TOKEN", "SPOTIFY_DEVICE_ID"):
+        monkeypatch.delenv(key, raising=False)
+
+
+def test_local_only_device_never_asks_spotify(app, local_only, monkeypatch):
+    snapshot = MagicMock()
+    monkeypatch.setattr(status_web, "spotify_snapshot", snapshot)
+    html = status_web.spotify_part(app)
+    snapshot.assert_not_called()
+    assert "not configured - local playback only" in html
+    assert "spotifyd" not in html
+
+
+def test_local_only_device_treats_a_stopped_mpd_as_broken(app, local_only,
+                                                           monkeypatch):
+    monkeypatch.setattr(status_web, "sh", lambda command, timeout=4:
+                        "inactive" if "is-active mpd" in command else "")
+    rows = status_web.playback_rows(app, status_web.empty_snapshot())
+    assert ("Local playback (mpd)", "inactive", status_web.BAD) in rows
+
+
+def test_stopped_mpd_is_only_a_warning_next_to_spotify(app, monkeypatch):
+    monkeypatch.setattr(status_web, "sh", lambda command, timeout=4:
+                        "inactive" if "is-active mpd" in command else "")
+    rows = status_web.playback_rows(app, status_web.empty_snapshot())
+    assert ("Local playback (mpd)", "inactive", status_web.WARN) in rows
+
+
+def test_local_only_log_has_no_spotifyd_section(app, local_only):
+    assert "spotifyd" not in status_web.log_part(app)

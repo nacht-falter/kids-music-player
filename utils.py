@@ -196,6 +196,14 @@ def create_player(music_data, retries=10, delay=1):
 
     logging.info("Creating player for RFID %s", rfid)
 
+    if source in ("spotify", "spotify_series") and not spotify_configured():
+        # Fail at once: the retry loop below would spend ten attempts
+        # discovering that there are no credentials to try.
+        logging.error(
+            "RFID %s is a Spotify card, but this device has no Spotify "
+            "configured (local playback only)", rfid)
+        return None
+
     if source in ("spotify", "spotify_series"):
         # Lazy import to avoid circular dependency
         from spotify import (SpotifyAuthError, SpotifyPlayer,
@@ -412,17 +420,32 @@ def shutdown(player, sync_done=None):
         os.system("sudo shutdown -h now")
 
 
+SPOTIFY_KEYS = ("SPOTIFY_USERCREDS", "SPOTIFY_REFRESH_TOKEN", "SPOTIFY_DEVICE_ID")
+
+
+def spotify_configured(config=None):
+    """Whether this device plays Spotify at all
+
+    A device with none of the Spotify keys plays local files only - toem3 was
+    brought up that way. verify_env_file rejects a partial set, so by the time
+    anything asks, "not all of them" means "none of them".
+    """
+    config = os.environ if config is None else config
+    return all(config.get(k) for k in SPOTIFY_KEYS)
+
+
 def verify_env_file(config):
     if not config:
         raise ValueError(".env file is missing or empty.")
 
-    required = [
-        "SPOTIFY_USERCREDS",
-        "SPOTIFY_REFRESH_TOKEN",
-        "SPOTIFY_DEVICE_ID",
-        "DATABASE_URL",
-        "RFID_READER"
-    ]
+    required = ["DATABASE_URL", "RFID_READER"]
+
+    # All three Spotify keys or none. None is a local-only device; some is a
+    # half-edited .env, and treating that as local-only would turn a typo
+    # into every Spotify card silently failing.
+    present = [k for k in SPOTIFY_KEYS if config.get(k)]
+    if present:
+        required = list(SPOTIFY_KEYS) + required
 
     missing = [k for k in required if not config.get(k)]
     if missing:

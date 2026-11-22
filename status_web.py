@@ -52,6 +52,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import requests
 
 import spotify
+import utils
 
 DEFAULT_PORT = 8080
 LOG_LINES = 30
@@ -139,10 +140,7 @@ def spotify_snapshot():
     makes, so its answer is the honest one, and a token refreshed here is a
     refresh the player does not have to do next.
     """
-    snap = {"token": None, "token_error": None,
-            "devices": None, "devices_error": None,
-            "playback": None, "playback_error": None,
-            "me": None, "me_error": None}
+    snap = empty_snapshot()
 
     try:
         manager = spotify.get_auth_manager()
@@ -469,25 +467,31 @@ def playback_rows(app, snap):
     rows = [now_playing_row(snap)]
     rows.extend(loaded_card_rows(app, snap))
 
-    # pgrep rather than systemctl: spotifyd is a *user* unit, so
-    # `systemctl --user` answers only for the user that asks, and the player
-    # may well be running as root.
-    running = bool(sh("pgrep -x spotifyd | head -1"))
-    rows.append(("Spotify service (spotifyd)", "running" if running
-                 else "not running", OK if running else BAD))
+    spotify_on = utils.spotify_configured()
+    if spotify_on:
+        # pgrep rather than systemctl: spotifyd is a *user* unit, so
+        # `systemctl --user` answers only for the user that asks, and the
+        # player may well be running as root.
+        running = bool(sh("pgrep -x spotifyd | head -1"))
+        rows.append(("Spotify service (spotifyd)", "running" if running
+                     else "not running", OK if running else BAD))
 
     mpd_state = sh("systemctl is-active mpd") or "unknown"
+    # On a local-only device mpd is the only way to play anything, so a
+    # stopped mpd is a broken box, not a caveat.
     rows.append(("Local playback (mpd)",
                  "running" if mpd_state == "active" else mpd_state,
-                 OK if mpd_state == "active" else WARN))
+                 OK if mpd_state == "active" else
+                 (WARN if spotify_on else BAD)))
 
     rows.extend(play_time_rows(app))
 
-    complaints = spotifyd_error_lines()
-    rows.append(("spotifyd complaints",
-                 "none since boot" if not complaints
-                 else "%d since boot" % len(complaints),
-                 OK if not complaints else WARN))
+    if spotify_on:
+        complaints = spotifyd_error_lines()
+        rows.append(("spotifyd complaints",
+                     "none since boot" if not complaints
+                     else "%d since boot" % len(complaints),
+                     OK if not complaints else WARN))
     return rows
 
 
@@ -791,19 +795,36 @@ def section_html(title, rows):
     return "<h2>%s</h2><div class='card'>%s</div>" % (html.escape(title), items)
 
 
+def empty_snapshot():
+    """What spotify_snapshot returns when there is nothing to ask"""
+    return {"token": None, "token_error": None,
+            "devices": None, "devices_error": None,
+            "playback": None, "playback_error": None,
+            "me": None, "me_error": None}
+
+
 def spotify_part(app):
     # One part for both sections: they share a snapshot, and each snapshot is
     # three round trips to Spotify.
+    if not utils.spotify_configured():
+        # A local-only device. Every Spotify row would be red for a reason
+        # that is not a fault, and the one row worth reading would drown.
+        return (section_html("Spotify", [(
+                    "Spotify", "not configured - local playback only", FLAT)])
+                + section_html("Playback",
+                               playback_rows(app, empty_snapshot())))
     snap = spotify_snapshot()
     return (section_html("Spotify", spotify_rows(snap))
             + section_html("Playback", playback_rows(app, snap)))
 
 
 def log_part(app):
-    return ("<h2>Recent activity</h2><div class='card text'>%s</div>"
-            % log_html(app)
-            + "<h2>spotifyd complaints</h2><div class='card text'>%s</div>"
-            % spotifyd_html())
+    html_out = ("<h2>Recent activity</h2><div class='card text'>%s</div>"
+                % log_html(app))
+    if utils.spotify_configured():
+        html_out += ("<h2>spotifyd complaints</h2><div class='card text'>%s"
+                     "</div>" % spotifyd_html())
+    return html_out
 
 
 # The page in reading order, each part fetched on its own so the quick ones

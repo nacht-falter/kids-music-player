@@ -264,3 +264,19 @@ def test_startup_warns_when_the_shutdown_dry_run_is_left_on(monkeypatch, caplog,
         application.initialize()
 
     assert "will NOT power off" in caplog.text
+
+
+def test_a_local_only_device_starts_and_skips_the_token_check(monkeypatch, tmp_path):
+    """No Spotify keys is a valid setup (toem3), not a config error"""
+    for key in ("SPOTIFY_USERCREDS", "SPOTIFY_REFRESH_TOKEN", "SPOTIFY_DEVICE_ID"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("DATABASE_URL", "x")
+    monkeypatch.setenv("RFID_READER", "x")
+    monkeypatch.setenv("APP_NAME", "localonlytest")
+
+    application = RFIDMusicPlayer()
+    with patch("main.load_dotenv"), \
+            patch("main.os.path.dirname", return_value=str(tmp_path)), \
+            patch("main.spotify.check_refresh_token_age") as token_age:
+        assert application.initialize()
+    token_age.assert_not_called()
